@@ -1,0 +1,28 @@
+# Secrets — NEVER commit
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environment
+venv/
+.venv/
+
+# Generated charts, logs, data
+payoff_chart.png
+*.log
+reports/
+logging_utils/trades.csv
+logging_utils/positions.json
+positions.json
+
+# Editor / tooling
+.vscode/
+.idea/
+*.swp
+.claude/
+
+# macOS
+.DS_Store
