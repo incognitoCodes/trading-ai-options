@@ -30,6 +30,11 @@ class OptionsReportGenerator:
         options_results: list[dict],
         top_opportunities: list[dict],
         portfolio: dict = None,
+        backtest_summary: str = None,
+        gate_summary: dict = None,
+        macro_events: list[dict] = None,
+        iv_min_level: float = 0.65,
+        positions: list = None,
     ) -> str:
         """Generate a complete HTML options advisory report.
 
@@ -141,9 +146,23 @@ class OptionsReportGenerator:
   All trading decisions are your own responsibility.
 </div>
 """
+        # Data provenance + screening methodology banner
+        html += self._methodology_banner(
+            gate_summary, options_results, iv_min_level,
+        )
+
+        # Defend existing capital first — open option positions advisory
+        html += self._positions_section(positions)
+
         # Weekly Trade Portfolio (top of report)
-        if portfolio:
+        if portfolio and portfolio.get("trades"):
             html += self._portfolio_section(portfolio)
+        else:
+            html += self._no_trades_banner(gate_summary, iv_min_level)
+
+        # Upcoming macro / economic calendar
+        if macro_events:
+            html += self._macro_section(macro_events)
 
         # VIX Overview
         html += self._vix_section(vix_context)
@@ -155,6 +174,21 @@ class OptionsReportGenerator:
         # IV Heatmap
         if options_results:
             html += self._iv_heatmap_section(options_results)
+
+        # Strategy Backtest (optional)
+        if backtest_summary:
+            html += (
+                '<div class="section"><h2>Strategy Backtest — '
+                'Put Credit Spreads</h2>'
+                '<p style="font-size:12px;color:#666;">Simulated weekly '
+                '30-delta put credit spreads, Black-Scholes priced with the '
+                'real IV index. Approximate by construction; past performance '
+                'does not guarantee future results.</p>'
+                '<pre style="font-size:11px;line-height:1.5;overflow-x:auto;'
+                'background:#f8f9fa;border:1px solid #e8e8e8;border-radius:8px;'
+                'padding:14px;">'
+                f"{backtest_summary}</pre></div>"
+            )
 
         # Footer
         html += f"""
@@ -181,95 +215,202 @@ class OptionsReportGenerator:
     # Sections
     # ------------------------------------------------------------------ #
 
-    def _portfolio_section(self, portfolio: dict) -> str:
-        """Weekly trade portfolio summary — appears at the top of the report."""
-        if not portfolio or not portfolio.get("trades"):
-            return ""
+    def _methodology_banner(
+        self, gate_summary: dict, options_results: list[dict],
+        iv_min_level: float,
+    ) -> str:
+        """Explain the screen + prove the premium provenance (MooMoo/real-time)."""
+        gs = gate_summary or {}
+        rt = gs.get("realtime_available")
+        as_of = gs.get("as_of")
+        n_names = len(options_results or [])
 
-        trades = portfolio["trades"]
-        total_prem = portfolio["total_premium"]
-        total_contracts = portfolio["total_contracts"]
-        target = portfolio["target"]
-        pct = portfolio["pct_of_target"]
-        total_max_loss = portfolio.get("total_max_loss", 0)
-        max_contracts = portfolio.get("max_contracts", 40)
-
-        # Color for target achievement
-        if pct >= 100:
-            target_color = "#2e7d32"
-            target_icon = "&#x2705;"
-        elif pct >= 75:
-            target_color = "#f57f17"
-            target_icon = "&#x1F7E1;"
+        if rt:
+            src_bg, src_fg, src_border = "#e8f5e9", "#1b5e20", "#2e7d32"
+            src_icon = "&#x1F7E2;"  # green circle
+            src_txt = (
+                f"<strong>Premiums confirmed on MooMoo real-time data</strong>"
+                + (f" &mdash; quotes as of <strong>{as_of} ET</strong>" if as_of else "")
+                + f". {gs.get('confirmed', 0)} of {gs.get('candidates', 0)} "
+                f"candidate legs priced on the live book."
+            )
         else:
-            target_color = "#c62828"
-            target_icon = "&#x1F534;"
+            src_bg, src_fg, src_border = "#fff3e0", "#e65100", "#fb8c00"
+            src_icon = "&#x1F7E0;"  # orange
+            src_txt = (
+                "<strong>MooMoo OpenD was unreachable at run time</strong> &mdash; "
+                "premiums below are yfinance <em>indicative</em> quotes, "
+                "NOT real-time confirmed. Start OpenD before the open to get "
+                "actual fills. No trade is marked high-probability without "
+                "real-time confirmation."
+            )
 
-        # Portfolio-level R/R
-        portfolio_rr = (
-            f"1:{total_max_loss / total_prem:.1f}"
-            if total_prem > 0 else "N/A"
-        )
-
-        # Tier breakdown
-        tier_data = portfolio.get("tier_breakdown", {})
-        agg_prem = tier_data.get("aggressive", 0)
-        mod_prem = tier_data.get("moderate", 0)
-        con_prem = tier_data.get("conservative", 0)
-        agg_pct = round(agg_prem / total_prem * 100) if total_prem > 0 else 0
-        mod_pct = round(mod_prem / total_prem * 100) if total_prem > 0 else 0
-        con_pct = 100 - agg_pct - mod_pct if total_prem > 0 else 0
-
-        html = f"""
-<div class="portfolio-section">
-  <h2>{target_icon} Weekly Trade Portfolio &mdash; Target: ${target:,.0f}/week</h2>
-
-  <div class="portfolio-kpi">
-    <div class="kpi">
-      <div class="kpi-label">Total Premium</div>
-      <div class="kpi-val" style="color: {target_color};">${total_prem:,.0f}</div>
+        return f"""
+<div class="section" style="border-left:5px solid {src_border};">
+  <h2>How these picks were selected</h2>
+  <div style="font-size:12.5px; line-height:1.7; color:#444;">
+    <div style="background:{src_bg}; color:{src_fg}; border-radius:8px; padding:10px 14px; margin-bottom:10px;">
+      {src_icon} {src_txt}
     </div>
-    <div class="kpi">
-      <div class="kpi-label">% of Target</div>
-      <div class="kpi-val">{pct:.0f}%</div>
-    </div>
-    <div class="kpi">
-      <div class="kpi-label">Contracts</div>
-      <div class="kpi-val">{total_contracts} / {max_contracts}</div>
-    </div>
-    <div class="kpi">
-      <div class="kpi-label">Total Max Risk</div>
-      <div class="kpi-val" style="color: #c62828;">${total_max_loss:,.0f}</div>
-    </div>
-    <div class="kpi">
-      <div class="kpi-label">Portfolio R/R</div>
-      <div class="kpi-val">{portfolio_rr}</div>
-    </div>
+    <strong>1. IV screen &mdash;</strong> only names with ATM implied volatility
+    <strong>&gt; {iv_min_level*100:.0f}%</strong> (absolute level) are considered.
+    <strong>{n_names}</strong> name{'s' if n_names != 1 else ''} passed today.<br>
+    <strong>2. Real-time premium &mdash;</strong> the actual bid/ask of every leg
+    is pulled from MooMoo at the US open to compute the true net credit.<br>
+    <strong>3. High-probability gate &mdash;</strong> a trade is only recommended
+    if its POP (on the real premium) is <strong>&ge; 70%</strong>, IV exceeds
+    realized vol, the chain is liquid, and no earnings land before expiry.<br>
+    <strong>4. Event overlay &mdash;</strong> upcoming company, sector, and US
+    macro catalysts (FOMC/CPI/jobs) are checked against each expiry.
   </div>
+</div>
+"""
 
-  <!-- Risk Tier Breakdown Bar -->
-  <div style="margin:12px 0 16px; padding:0 4px;">
-    <div style="font-size:11px; font-weight:600; color:#444; margin-bottom:6px;">
-      Risk Allocation
-    </div>
-    <div style="display:flex; height:22px; border-radius:6px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,0.15);">
-      <div style="width:{con_pct}%; background:#2e7d32; color:#fff; font-size:10px; display:flex; align-items:center; justify-content:center; min-width:{20 if con_pct > 0 else 0}px;">
-        {f'🛡️ {con_pct}%' if con_pct > 8 else ''}
-      </div>
-      <div style="width:{mod_pct}%; background:#f57f17; color:#fff; font-size:10px; display:flex; align-items:center; justify-content:center; min-width:{20 if mod_pct > 0 else 0}px;">
-        {f'⚖️ {mod_pct}%' if mod_pct > 8 else ''}
-      </div>
-      <div style="width:{agg_pct}%; background:#c62828; color:#fff; font-size:10px; display:flex; align-items:center; justify-content:center; min-width:{20 if agg_pct > 0 else 0}px;">
-        {f'⚡ {agg_pct}%' if agg_pct > 8 else ''}
-      </div>
-    </div>
-    <div style="display:flex; justify-content:space-between; font-size:10px; color:#666; margin-top:4px;">
-      <span>🛡️ Conservative ${con_prem:,.0f}</span>
-      <span>⚖️ Moderate ${mod_prem:,.0f}</span>
-      <span>⚡ Aggressive ${agg_prem:,.0f}</span>
-    </div>
+    def _no_trades_banner(self, gate_summary: dict, iv_min_level: float) -> str:
+        """Shown when nothing clears the high-probability gate."""
+        gs = gate_summary or {}
+        n = gs.get("candidates", 0)
+        return f"""
+<div class="portfolio-section" style="border-color:#f57f17;">
+  <h2 style="color:#e65100; border-color:#f57f17;">No high-probability trades today</h2>
+  <div style="font-size:13px; color:#555; line-height:1.7;">
+    Nothing cleared the full screen today: <strong>ATM IV &gt; {iv_min_level*100:.0f}%</strong>
+    &rarr; real-time premium confirmation &rarr; <strong>POP &ge; 70%</strong> with
+    IV&gt;HV, liquid strikes, and no binary event before expiry.
+    {f'{n} candidate trade(s) were evaluated but none passed the probability gate.' if n else 'No names passed the IV level screen.'}
+    <br><br>
+    This is by design &mdash; the advisory only recommends when the odds are
+    genuinely in your favor. A quiet day is a valid signal to hold cash.
   </div>
+</div>
+"""
 
+    def _positions_section(self, positions: list) -> str:
+        """Defensive advisory for the trader's OPEN option positions."""
+        if positions is None:
+            return ""  # not fetched (RT off / OpenD down) — stay silent
+        if not positions:
+            return (
+                '<div class="section"><h2>🛡️ Manage Your Open Option Trades</h2>'
+                '<p style="font-size:13px;color:#555;">No open option positions '
+                'found in your MooMoo account. Nothing to defend today.</p></div>'
+            )
+
+        verdict_style = {
+            "CLOSE / DEFEND NOW": ("#c62828", "#ffebee"),
+            "CLOSE — SALVAGE": ("#c62828", "#ffebee"),
+            "DEFEND — ROLL / HEDGE": ("#e65100", "#fff3e0"),
+            "TAKE PROFIT": ("#2e7d32", "#e8f5e9"),
+            "HOLD & MONITOR": ("#f57f17", "#fff8e1"),
+            "HOLD": ("#546e7a", "#eceff1"),
+        }
+
+        cards = ""
+        for p in positions:
+            a = p.get("assessment", {})
+            v = a.get("verdict", "HOLD")
+            vfg, vbg = verdict_style.get(v, ("#546e7a", "#eceff1"))
+            upl = p.get("unrealized_pl", 0.0)
+            upl_color = "#2e7d32" if upl >= 0 else "#c62828"
+            spot = p.get("spot")
+            iv = p.get("iv")
+            delta = p.get("delta")
+            cushion = a.get("cushion_pct")
+            captured = a.get("captured_pct")
+
+            metric_bits = [
+                f"Spot: <strong>${spot:,.2f}</strong>" if spot else "",
+                f"Entry: ${p.get('entry_price',0):.2f}",
+                f"Now: ${p.get('cur_price',0):.2f}",
+                (f"Unreal. P&amp;L: <strong style='color:{upl_color};'>"
+                 f"${upl:,.0f} ({p.get('pl_ratio',0):.0f}%)</strong>"),
+                f"IV: {iv*100:.0f}%" if iv else "",
+                f"Δ: {delta:.2f}" if delta is not None else "",
+                f"Cushion: {cushion:.1f}% OTM" if cushion is not None else "",
+                f"BE: ${a['breakeven']:.2f}" if a.get("breakeven") else "",
+                f"{p.get('dte','?')} DTE",
+            ]
+            metrics = " &nbsp;|&nbsp; ".join(m for m in metric_bits if m)
+
+            flags = a.get("flags") or []
+            flag_html = ""
+            if flags:
+                flag_html = "".join(
+                    f'<span style="background:#c62828; color:#fff; padding:1px 6px; '
+                    f'border-radius:3px; font-size:10px; margin-right:5px;">'
+                    f'&#x26A0;&#xFE0F; {f}</span>' for f in flags
+                )
+
+            actions = a.get("actions") or []
+            act_html = "".join(f"<li>{act}</li>" for act in actions)
+
+            note = a.get("note")
+            note_html = (
+                f'<div style="font-size:11px; color:#6a1b9a; margin-top:5px;">'
+                f'ℹ️ {note}</div>' if note else ""
+            )
+
+            cards += f"""
+          <div style="border:1px solid #e0e0e0; border-left:5px solid {vfg}; border-radius:8px; padding:14px 16px; margin:12px 0; background:#fafafa;">
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+              <div style="font-size:15px; font-weight:700; color:#1a1a2e;">
+                {p['side']} {p['contracts']}&times; {p['underlying']} ${p['strike']:.0f} {p['type']}
+                <span style="font-size:12px; color:#888; font-weight:400;">exp {p['expiry']}</span>
+              </div>
+              <span style="background:{vbg}; color:{vfg}; padding:3px 12px; border-radius:14px; font-size:13px; font-weight:700;">
+                {v}
+              </span>
+            </div>
+            <div style="font-size:12px; color:#444; margin:8px 0;">{metrics}</div>
+            {f'<div style="margin:6px 0;">{flag_html}</div>' if flag_html else ''}
+            <div style="font-size:12.5px; color:#333; font-weight:600; margin-top:6px;">Recommended action:</div>
+            <ul style="margin:4px 0 0 0; padding-left:20px; font-size:12.5px; line-height:1.6; color:#333;">{act_html}</ul>
+            {note_html}
+          </div>"""
+
+        return f"""
+<div class="section" style="border-left:5px solid #6a1b9a;">
+  <h2>🛡️ Manage Your Open Option Trades</h2>
+  <p style="font-size:12px; color:#666; margin-top:0;">
+    Live positions pulled from your MooMoo account with real-time quotes.
+    Each carries a defensive recommendation to protect against losses &mdash;
+    take profit, close early, roll, or add a hedge. Advisory only; no orders
+    are placed for you.
+  </p>
+  {cards}
+</div>
+"""
+
+    def _macro_section(self, macro_events: list[dict]) -> str:
+        """Upcoming US macro/economic catalysts (market-wide context)."""
+        rows = ""
+        for e in macro_events[:8]:
+            impact = e.get("impact", "MEDIUM")
+            approx = " (approx)" if e.get("approx") else ""
+            rows += f"""
+    <tr>
+      <td style="white-space:nowrap;"><strong>{e['date']}</strong>
+        <span style="color:#888; font-size:11px;">({e['days_away']}d){approx}</span></td>
+      <td><span class="event-badge event-{impact}">{impact}</span></td>
+      <td>{e['event']}</td>
+      <td style="font-size:11.5px; color:#666;">{e.get('note','')}</td>
+    </tr>"""
+        return f"""
+<div class="section">
+  <h2>Upcoming Market &amp; Economic Catalysts</h2>
+  <p style="font-size:12px; color:#666; margin-top:0;">
+    Scheduled events that can move the whole tape &mdash; weigh these against
+    any expiry that straddles them. FOMC dates are exact; monthly releases are
+    approximate.
+  </p>
+  <table>
+    <tr><th>Date</th><th>Impact</th><th>Event</th><th>Why it matters</th></tr>
+    {rows}
+  </table>
+</div>
+"""
+
+    _PTABLE_HEADER = """
   <table class="portfolio-table">
     <tr>
       <th style="width:28px;">#</th>
@@ -287,26 +428,31 @@ class OptionsReportGenerator:
       <th>Remark</th>
     </tr>
 """
-        running_total = 0.0
-        for i, t in enumerate(trades, 1):
+
+    def _portfolio_rows(self, trades, start_index: int, start_running: float):
+        """Render <tr> rows for a list of portfolio trades.
+
+        Returns (rows_html, next_index, running_total).
+        """
+        html = ""
+        running_total = start_running
+        i = start_index
+        tier_badge_map = {
+            "conservative": ("🛡️", "#e8f5e9", "#2e7d32"),
+            "moderate": ("⚖️", "#fff8e1", "#f57f17"),
+            "aggressive": ("⚡", "#ffebee", "#c62828"),
+        }
+        for t in trades:
             running_total += t["total_premium"]
             strat = t["strategy"]
             trade_rr = (
                 f"1:{t['max_loss_per_contract'] / t['premium_per_contract']:.1f}"
                 if t["premium_per_contract"] > 0 else "N/A"
             )
-
             tier = t.get("risk_tier", "moderate")
-            tier_badge_map = {
-                "conservative": ("🛡️", "#e8f5e9", "#2e7d32"),
-                "moderate": ("⚖️", "#fff8e1", "#f57f17"),
-                "aggressive": ("⚡", "#ffebee", "#c62828"),
-            }
             tier_icon, tier_bg, tier_fg = tier_badge_map.get(
                 tier, ("", "#f5f5f5", "#555")
             )
-
-            # Movement / event context
             em_pct = t.get("expected_move_pct")
             daily_pct = t.get("daily_move_pct")
             events = t.get("events_before_expiry", [])
@@ -330,7 +476,6 @@ class OptionsReportGenerator:
                         f'border-radius:3px; font-size:8px; background:{ec}; '
                         f'color:#fff; margin-top:2px;">{short}</span> '
                     )
-
             html += f"""
     <tr style="background:{tier_bg}40;">
       <td style="font-weight:600; color:#555;">{i}</td>
@@ -360,33 +505,146 @@ class OptionsReportGenerator:
       <td style="text-align:center; font-size:11px; font-weight:600; color:{'#2e7d32' if (t.get('pop') or 0) >= 70 else '#f57f17' if (t.get('pop') or 0) >= 60 else '#c62828'};">
         {f"{t['pop']:.0f}%" if t.get('pop') else '—'}
       </td>
-      <td style="font-size:11px; color:#555;">{t['remark']}</td>
+      <td style="font-size:11px; color:#555;">{t.get('remark','')}</td>
     </tr>"""
+            i += 1
+        return html, i, running_total
 
-        html += f"""
+    def _portfolio_section(self, portfolio: dict) -> str:
+        """Weekly trade portfolio summary — appears at the top of the report.
+
+        Renders two parts: Part 1 (high-conviction, gated) and Part 2
+        (target fillers), toward the weekly premium target.
+        """
+        if not portfolio or not portfolio.get("trades"):
+            return ""
+
+        trades = portfolio["trades"]
+        core_trades = portfolio.get(
+            "core_trades", [t for t in trades if t.get("part") != "fill"]
+        )
+        fill_trades = portfolio.get(
+            "fill_trades", [t for t in trades if t.get("part") == "fill"]
+        )
+        core_prem = portfolio.get(
+            "core_premium", sum(t["total_premium"] for t in core_trades)
+        )
+        fill_prem = portfolio.get(
+            "fill_premium", sum(t["total_premium"] for t in fill_trades)
+        )
+        total_prem = portfolio["total_premium"]
+        total_contracts = portfolio["total_contracts"]
+        target = portfolio["target"]
+        pct = portfolio["pct_of_target"]
+        core_pct = portfolio.get("core_pct_of_target",
+                                 round(core_prem / target * 100, 1) if target else 0)
+        total_max_loss = portfolio.get("total_max_loss", 0)
+        max_contracts = portfolio.get("max_contracts", 40)
+        fill_min_pop = portfolio.get("fill_min_pop", 55)
+
+        # Color for target achievement
+        if pct >= 100:
+            target_color = "#2e7d32"
+            target_icon = "&#x2705;"
+        elif pct >= 75:
+            target_color = "#f57f17"
+            target_icon = "&#x1F7E1;"
+        else:
+            target_color = "#c62828"
+            target_icon = "&#x1F534;"
+
+        portfolio_rr = (
+            f"1:{total_max_loss / total_prem:.1f}" if total_prem > 0 else "N/A"
+        )
+
+        html = f"""
+<div class="portfolio-section">
+  <h2>{target_icon} Weekly Trade Portfolio &mdash; Target: ${target:,.0f}/week</h2>
+
+  <div class="portfolio-kpi">
+    <div class="kpi">
+      <div class="kpi-label">Total Premium</div>
+      <div class="kpi-val" style="color: {target_color};">${total_prem:,.0f}</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">% of Target</div>
+      <div class="kpi-val">{pct:.0f}%</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Contracts</div>
+      <div class="kpi-val">{total_contracts} / {max_contracts}</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Total Max Risk</div>
+      <div class="kpi-val" style="color: #c62828;">${total_max_loss:,.0f}</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Portfolio R/R</div>
+      <div class="kpi-val">{portfolio_rr}</div>
+    </div>
+  </div>
+
+  <div style="display:flex; gap:24px; flex-wrap:wrap; font-size:12px; margin:4px 0 14px; padding:8px 12px; background:#ffffff90; border-radius:8px;">
+    <span>&#x2705; <strong>Part 1 — High-conviction:</strong>
+      <strong style="color:#1b5e20;">${core_prem:,.0f}</strong> ({core_pct:.0f}% of target)</span>
+    <span>&#x2691; <strong>Part 2 — Target fillers:</strong>
+      <strong style="color:#e65100;">${fill_prem:,.0f}</strong>
+      ({(pct - core_pct):.0f}% of target)</span>
+  </div>
+"""
+        running = 0.0
+        idx = 1
+
+        # ---- Part 1: high-conviction ----
+        if core_trades:
+            rows, idx, running = self._portfolio_rows(core_trades, idx, running)
+            html += f"""
+  <div style="font-size:13px; font-weight:700; color:#1b5e20; margin:6px 0 2px;">
+    Part 1 &mdash; High-Conviction &nbsp;<span style="font-weight:400; color:#555; font-size:11px;">
+    (POP&nbsp;&ge;&nbsp;70%, real-time confirmed, IV&gt;HV, no binary event)</span>
+  </div>
+  {self._PTABLE_HEADER}{rows}
     <tr class="portfolio-total">
-      <td colspan="5" style="text-align:right; font-size:13px; padding-right:12px; border-top:2px solid #2e7d32;">
-        TOTAL
-      </td>
-      <td style="text-align:center; font-size:13px;">{total_contracts}</td>
-      <td></td>
-      <td style="text-align:right; font-size:14px; color:#1b5e20;">
-        ${total_prem:,.0f}
-      </td>
-      <td></td>
-      <td style="text-align:right; font-size:13px; color:#c62828;">
-        ${total_max_loss:,.0f}
-      </td>
-      <td style="text-align:center; font-size:11px;">{portfolio_rr}</td>
-      <td></td>
+      <td colspan="7" style="text-align:right; padding-right:12px;">Part 1 subtotal</td>
+      <td style="text-align:right; color:#1b5e20;">${core_prem:,.0f}</td>
+      <td colspan="5"></td>
     </tr>
   </table>
+"""
+
+        # ---- Part 2: target fillers ----
+        if fill_trades:
+            rows, idx, running = self._portfolio_rows(fill_trades, idx, running)
+            html += f"""
+  <div style="font-size:13px; font-weight:700; color:#e65100; margin:14px 0 2px;">
+    Part 2 &mdash; Target Fillers &nbsp;<span style="font-weight:400; color:#555; font-size:11px;">
+    (confirmed real-time premium, POP {fill_min_pop:.0f}&ndash;70% &mdash; added to reach the ${target:,.0f} target; lower conviction)</span>
+  </div>
+  {self._PTABLE_HEADER}{rows}
+    <tr class="portfolio-total">
+      <td colspan="7" style="text-align:right; padding-right:12px;">Part 2 subtotal</td>
+      <td style="text-align:right; color:#e65100;">${fill_prem:,.0f}</td>
+      <td colspan="5"></td>
+    </tr>
+  </table>
+"""
+
+        html += f"""
+  <div style="margin-top:12px; font-size:14px; font-weight:700; color:#1b5e20; text-align:right;">
+    Combined premium: ${total_prem:,.0f} &nbsp;/&nbsp; ${target:,.0f} target
+    ({pct:.0f}%) &nbsp;|&nbsp; {total_contracts} contracts &nbsp;|&nbsp;
+    Max risk <span style="color:#c62828;">${total_max_loss:,.0f}</span>
+  </div>
 
   <div style="margin-top:10px; font-size:11px; color:#555; border-top:1px solid #a5d6a7; padding-top:8px;">
-    &#x26A0;&#xFE0F; Execute all trades simultaneously for portfolio-level
-    risk management. Premium quoted at current bid &mdash; actual fills may
-    vary. Max {max_contracts} contracts to stay within margin limits.
-    <strong>This is NOT financial advice.</strong>
+    &#x2705; <strong>Part 1</strong> trades cleared the full high-probability gate
+    (POP&nbsp;&ge;&nbsp;70% on <strong>MooMoo real-time premium</strong>, IV&gt;HV,
+    liquid strikes, no binary event before expiry).
+    &#x2691; <strong>Part 2</strong> trades are real-time-priced near-misses
+    (POP&nbsp;{fill_min_pop:.0f}&ndash;70%) added only to reach the ${target:,.0f}
+    weekly target &mdash; treat them as lower conviction and size accordingly.
+    Premium is the confirmed net credit; actual fills may vary. Max
+    {max_contracts} contracts for margin. <strong>NOT financial advice.</strong>
   </div>
 </div>
 """
@@ -480,6 +738,14 @@ class OptionsReportGenerator:
               </div>
               <div class="ocard-metrics">{metrics}</div>"""
 
+            # Sector / segment catalyst context
+            if opp.get("sector_note"):
+                sector_lbl = opp.get("sector") or "Sector"
+                html += (
+                    f'<div style="font-size:11.5px; color:#4a148c; margin:2px 0 4px 0;">'
+                    f'🏭 <strong>{sector_lbl}:</strong> {opp["sector_note"]}</div>'
+                )
+
             # Strategy suggestion box (always present)
             ss = opp.get("strategy_suggestion") or {}
             if ss:
@@ -571,26 +837,75 @@ class OptionsReportGenerator:
                     html += f"""
                 <div class="trade-card" style="border-left: 3px solid #e53935;">
                   <div class="trade-head">
-                    <span class="strat-badge strat-{strat}">{trade['strategy_display']}</span>
-                    {trade['action']}
+                    <span class="strat-badge strat-{strat}">{trade.get('strategy_display','')}</span>
+                    {trade.get('action','')}
                   </div>
-                  <div class="trade-rationale">{trade['rationale']}</div>
+                  <div class="trade-rationale">{trade.get('rationale','')}</div>
                 </div>"""
                 else:
+                    # Provenance + probability badges
+                    src = trade.get("premium_source", "")
+                    confirmed = trade.get("confirmed")
+                    high_prob = trade.get("high_prob")
+                    pop = trade.get("pop")
+                    if confirmed:
+                        src_badge = (
+                            '<span style="background:#e8f5e9;color:#1b5e20;'
+                            'padding:1px 6px;border-radius:4px;font-size:10px;'
+                            'font-weight:600;">&#x1F7E2; MooMoo real-time'
+                            + (f" &middot; {trade.get('as_of')}" if trade.get('as_of') else "")
+                            + '</span>'
+                        )
+                    else:
+                        src_badge = (
+                            '<span style="background:#fff3e0;color:#e65100;'
+                            'padding:1px 6px;border-radius:4px;font-size:10px;'
+                            f'font-weight:600;">&#x1F7E0; {src or "indicative"}</span>'
+                        )
+                    if high_prob:
+                        hp_badge = (
+                            '<span style="background:#2e7d32;color:#fff;'
+                            'padding:1px 6px;border-radius:4px;font-size:10px;'
+                            'font-weight:700;margin-left:4px;">&#x2705; HIGH-PROBABILITY</span>'
+                        )
+                    else:
+                        reasons = trade.get("gate_reasons") or []
+                        why = (" — " + "; ".join(reasons)) if reasons else ""
+                        hp_badge = (
+                            '<span style="background:#eceff1;color:#546e7a;'
+                            'padding:1px 6px;border-radius:4px;font-size:10px;'
+                            f'font-weight:600;margin-left:4px;" title="{why}">Not gated{why}</span>'
+                        )
+                    pop_str = (
+                        f'| POP: <strong style="color:{"#2e7d32" if (pop or 0) >= 70 else "#f57f17"};">'
+                        f'{pop:.0f}%</strong>' if pop is not None else ""
+                    )
+                    # Macro/sector caution for this expiry
+                    macro_hi = trade.get("macro_high_impact") or []
+                    macro_line = ""
+                    if macro_hi:
+                        names = ", ".join(e["event"] for e in macro_hi[:3])
+                        macro_line = (
+                            f'<div style="font-size:11px;color:#c62828;margin-top:3px;">'
+                            f'&#x26A0;&#xFE0F; Event risk before expiry: {names}</div>'
+                        )
                     html += f"""
                 <div class="trade-card">
                   <div class="trade-head">
-                    <span class="strat-badge strat-{strat}">{trade['strategy_display']}</span>
-                    {trade['action']}
+                    <span class="strat-badge strat-{strat}">{trade.get('strategy_display','')}</span>
+                    {trade.get('action','')}
                   </div>
+                  <div style="margin:4px 0;">{src_badge}{hp_badge}</div>
                   <div class="trade-detail">
-                    Premium: <strong>${trade['premium']:.2f}</strong>/share
-                    | Max Profit: ${trade['max_profit']:,.0f}
-                    | Max Loss: ${trade['max_loss']:,.0f}
-                    | Breakeven: ${trade.get('breakeven', 0):,.2f}
-                    {f"| Risk/Reward: {trade['risk_reward']}" if trade.get('risk_reward') else ""}
+                    Premium: <strong>${trade.get('premium',0):.2f}</strong>/share
+                    | Max Profit: ${trade.get('max_profit',0):,.0f}
+                    | Max Loss: ${trade.get('max_loss',0):,.0f}
+                    | Breakeven: ${trade.get('breakeven', trade.get('breakeven_low') or 0):,.2f}
+                    {pop_str}
+                    {f"| R/R: {trade['risk_reward']}" if trade.get('risk_reward') else ""}
                   </div>
-                  <div class="trade-rationale">{trade['rationale']}</div>
+                  {macro_line}
+                  <div class="trade-rationale">{trade.get('rationale','')}</div>
                 </div>"""
 
             html += "</div>"

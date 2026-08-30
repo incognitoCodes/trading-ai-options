@@ -40,7 +40,14 @@ from research_agents.data_collector import DataCollector
 from research_agents.options_advisor import OptionsAdvisor, OPTIONS_UNIVERSE
 from research_agents.options_report import OptionsReportGenerator
 from research_agents.email_sender import EmailSender
-from research_agents.config import OPTIONS_EMAIL_RECIPIENT
+from research_agents.moomoo_quotes import MoomooOptionQuotes
+from research_agents.macro_calendar import upcoming_macro_events
+from research_agents.config import (
+    OPTIONS_EMAIL_RECIPIENT,
+    OPTIONS_USE_MOOMOO_REALTIME,
+    OPTIONS_MIN_IV_LEVEL,
+    OPTIONS_WEEKLY_TARGET,
+)
 from research_agents.watchlist import QUICK_SCAN
 
 # Logging
@@ -96,40 +103,128 @@ def run(
     price_data = collector.get_batch_data(watchlist)
     logger.info(f"  Got price data for {len(price_data)} tickers")
 
-    # Step 3: Options Analysis
+    # Step 3: Options Analysis (Stage 1 screen — yfinance chains)
     logger.info("Step 3/5: Scanning option chains and scoring premium opportunities...")
     options_results = advisor.analyze_options(price_data, tickers=watchlist)
-    top_opps = advisor.get_top_opportunities(options_results, n=20)
+
+    # IV LEVEL SCREEN — per spec, only CONSIDER names with ATM IV > threshold.
+    iv_pass = [r for r in options_results if r.get("iv_level_pass")]
     logger.info(
-        f"  Analyzed {len(options_results)} tickers with options data"
+        f"  Analyzed {len(options_results)} tickers; "
+        f"{len(iv_pass)} passed the IV > {OPTIONS_MIN_IV_LEVEL*100:.0f}% level screen"
     )
+    if iv_pass:
+        logger.info(
+            "  High-IV names: "
+            + ", ".join(
+                f"{r['ticker']}({r['atm_iv']*100:.0f}%)" for r in iv_pass[:12]
+            )
+        )
+    # The email only considers IV>65% names from here on.
+    options_results = iv_pass
+
+    # Step 3a: Stage 2 — confirm ACTUAL premium on MooMoo real-time book and
+    # apply the high-probability gate. Runs at US market open (9:30 ET).
+    gate_summary = {"realtime_available": False, "candidates": 0,
+                    "confirmed": 0, "high_prob": 0, "as_of": None}
+    realtime = None
+    if OPTIONS_USE_MOOMOO_REALTIME and options_results:
+        logger.info(
+            "Step 3a: Confirming premiums on MooMoo real-time data "
+            "(OpenD) + applying high-probability gate..."
+        )
+        realtime = MoomooOptionQuotes()
+        realtime.connect()  # graceful: falls back to yfinance if OpenD down
+        try:
+            gate_summary = advisor.confirm_and_gate(options_results, realtime=realtime)
+        finally:
+            realtime.close()
+        logger.info(
+            f"  Real-time: {gate_summary['realtime_available']} | "
+            f"candidates {gate_summary['candidates']} | "
+            f"confirmed {gate_summary['confirmed']} | "
+            f"HIGH-PROB {gate_summary['high_prob']}"
+            + (f" | quotes as of {gate_summary['as_of']}"
+               if gate_summary.get("as_of") else "")
+        )
+    elif not options_results:
+        logger.info("Step 3a: No IV>65% names today — skipping real-time confirm.")
+
+    top_opps = advisor.get_top_opportunities(options_results, n=20)
     if top_opps:
         logger.info(
             f"  Top opportunity: {top_opps[0]['ticker']} "
             f"(score {top_opps[0]['premium_score']}/100)"
         )
 
-    # Step 3b: Build weekly trade portfolio ($5K target, max 40 contracts)
-    logger.info("Step 3b: Building weekly trade portfolio (target $5,000)...")
-    portfolio = advisor.build_weekly_portfolio(
+    # Step 3b: Build two-part weekly portfolio toward $4K target.
+    #   Part 1 = high-conviction gated trades; Part 2 = confirmed near-misses
+    #   added only to reach the $4,000 target.
+    logger.info("Step 3b: Building two-part weekly portfolio (target $4,000)...")
+    portfolio = advisor.build_two_part_portfolio(
         options_results,
-        target_premium=5000.0,
+        target=OPTIONS_WEEKLY_TARGET,
         max_contracts=30,
         max_per_ticker=5,
     )
     logger.info(
         f"  Portfolio: {portfolio['total_contracts']} contracts, "
         f"${portfolio['total_premium']:,.0f} premium "
-        f"({portfolio['pct_of_target']:.0f}% of target)"
+        f"({portfolio['pct_of_target']:.0f}% of ${OPTIONS_WEEKLY_TARGET:,.0f}) "
+        f"— Part 1 (high-conviction) ${portfolio['core_premium']:,.0f}, "
+        f"Part 2 (fillers) ${portfolio['fill_premium']:,.0f}"
     )
+
+    # Step 3d: Pull OPEN option positions and generate defensive advice
+    positions = None
+    if OPTIONS_USE_MOOMOO_REALTIME:
+        logger.info("Step 3d: Fetching open option positions for defensive advice...")
+        try:
+            from research_agents.position_manager import OptionPositionAdvisor
+            pos_adv = OptionPositionAdvisor()
+            if pos_adv.connect():
+                positions = pos_adv.advise()
+                pos_adv.close()
+                logger.info(
+                    f"  {len(positions)} open option position(s): "
+                    + ", ".join(
+                        f"{p['side']} {p['contracts']}x {p['underlying']} "
+                        f"${p['strike']:.0f}{p['type'][0]} [{p['assessment']['verdict']}]"
+                        for p in positions
+                    )
+                )
+            else:
+                logger.warning("  Could not connect for positions — skipping.")
+        except Exception as e:
+            logger.warning(f"  Position advisory skipped: {e}")
+
+    # Step 3c: Backtest the core strategy so the email shows how it has
+    # actually performed (approximate model — see options_backtester docs)
+    backtest_summary = None
+    try:
+        from research_agents.options_backtester import OptionsBacktester
+        logger.info("Step 3c: Backtesting put credit spread strategy (SPY)...")
+        bt = OptionsBacktester("SPY")
+        bt_df = bt.load_data("8y")
+        bt_results = [bt.run(bt_df), bt.run(bt_df, manage=True)]
+        backtest_summary = OptionsBacktester.format_summary(bt_results)
+        logger.info(f"\n{backtest_summary}")
+    except Exception as e:
+        logger.warning(f"  Backtest skipped: {e}")
 
     # Step 4: Generate Report
     logger.info("Step 4/5: Generating options advisory report...")
+    macro_events = upcoming_macro_events(within_days=30)
     html = report_gen.generate(
         vix_context=vix_context,
         options_results=options_results,
         top_opportunities=top_opps,
         portfolio=portfolio,
+        backtest_summary=backtest_summary,
+        gate_summary=gate_summary,
+        macro_events=macro_events,
+        iv_min_level=OPTIONS_MIN_IV_LEVEL,
+        positions=positions,
     )
 
     # Step 5: Email (ONLY to the configured OPTIONS_EMAIL_RECIPIENT)

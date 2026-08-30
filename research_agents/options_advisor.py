@@ -38,6 +38,10 @@ from research_agents.config import (
     OPTIONS_DTE_FAR,
     OPTIONS_MIN_OPEN_INTEREST,
     OPTIONS_MIN_PREMIUM_SCORE,
+    OPTIONS_MIN_IV_LEVEL,
+    OPTIONS_MIN_POP,
+    OPTIONS_MAX_BID_ASK_PCT,
+    OPTIONS_USE_MOOMOO_REALTIME,
     HV_WINDOW_SHORT,
     HV_WINDOW_STANDARD,
     HV_WINDOW_LONG,
@@ -119,6 +123,206 @@ class OptionsAdvisor:
         """Return top N premium selling opportunities."""
         return results[:n]
 
+    # ------------------------------------------------------------------ #
+    # Stage 2 — real-time confirmation + high-probability gate
+    # ------------------------------------------------------------------ #
+    def confirm_and_gate(
+        self,
+        results: list[dict],
+        realtime=None,
+        today=None,
+    ) -> dict:
+        """Confirm candidate trades on MooMoo real-time data and apply the
+        high-probability gate.
+
+        For every candidate trade on every (already IV>65%) name:
+          1. Pull the ACTUAL premium/greeks/OI for its legs from MooMoo.
+          2. Overwrite the estimated economics with the confirmed ones and
+             recompute POP on the real ATM IV.
+          3. Attach the macro/sector events that land before expiry.
+          4. Decide `high_prob` via `_high_prob_gate`.
+
+        Only trades with `high_prob=True` should be recommended / put in the
+        portfolio. Returns a small summary dict for the report banner.
+
+        `realtime` is a connected MoomooOptionQuotes (or None → yfinance-only,
+        in which case nothing is real-time-confirmed and the report says so).
+        """
+        from research_agents.macro_calendar import (
+            macro_events_before, high_impact_macro_before,
+        )
+
+        rt_available = bool(realtime and getattr(realtime, "is_connected", False))
+        n_candidates = 0
+        n_confirmed = 0
+        n_high_prob = 0
+        as_of = None
+
+        for r in results:
+            if not r.get("iv_level_pass"):
+                continue
+            ticker = r["ticker"]
+            spot = r.get("current_price")
+            hv_20 = r.get("hv_20")
+            events = r.get("upcoming_events", [])
+
+            spot_rt = None
+            if rt_available:
+                try:
+                    spot_rt = realtime.get_spot(ticker)
+                except Exception:
+                    spot_rt = None
+            spot_used = spot_rt or spot
+
+            for trade in r.get("trades", []) + r.get("weekly_trades", []):
+                if trade.get("strategy") == "EVENT_WARNING":
+                    continue
+                n_candidates += 1
+
+                # Macro/sector catalysts before this expiry (independent of RT)
+                expiry = trade.get("expiry")
+                trade["macro_before"] = macro_events_before(expiry, today)
+                trade["macro_high_impact"] = high_impact_macro_before(expiry, today)
+                trade["sector_note"] = r.get("sector_note", "")
+
+                conf = None
+                if rt_available:
+                    try:
+                        conf = realtime.confirm_trade(trade, ticker, spot=spot_used)
+                    except Exception as e:
+                        logger.debug(f"confirm_trade failed {ticker}: {e}")
+                        conf = None
+
+                real_iv = r.get("atm_iv")
+                if conf and conf.get("ok"):
+                    n_confirmed += 1
+                    as_of = as_of or conf.get("as_of")
+                    real_iv = conf.get("atm_iv") or real_iv
+                    # Overwrite estimated economics with confirmed ones
+                    trade["premium"] = conf["net_credit"]
+                    trade["premium_per_contract"] = conf["premium_per_contract"]
+                    for key in (
+                        "max_profit", "max_loss", "breakeven",
+                        "breakeven_low", "breakeven_high", "spread_width",
+                        "no_upside_risk",
+                    ):
+                        if key in conf:
+                            trade[key] = conf[key]
+                    trade["min_oi"] = conf.get("min_oi")
+                    trade["worst_spread_pct"] = conf.get("worst_spread_pct")
+                    trade["confirmed_legs"] = conf.get("legs")
+                    trade["premium_source"] = "MooMoo real-time"
+                    trade["as_of"] = conf.get("as_of")
+                    trade["confirmed"] = True
+                    trade["real_atm_iv"] = real_iv
+                    # Recompute POP on the confirmed premium + real ATM IV
+                    trade["pop"] = self._recompute_pop(trade, spot_used, real_iv)
+                else:
+                    trade["premium_source"] = (
+                        "yfinance (indicative — OpenD offline)"
+                        if rt_available is False
+                        else "yfinance (indicative — not confirmed)"
+                    )
+                    trade["confirmed"] = False
+                    trade["real_atm_iv"] = real_iv
+
+                # Apply the high-probability gate
+                passed, reasons = self._high_prob_gate(
+                    trade, real_iv, hv_20, events,
+                )
+                trade["high_prob"] = passed
+                trade["gate_reasons"] = reasons
+                if passed:
+                    n_high_prob += 1
+
+        return {
+            "realtime_available": rt_available,
+            "candidates": n_candidates,
+            "confirmed": n_confirmed,
+            "high_prob": n_high_prob,
+            "as_of": as_of,
+        }
+
+    @staticmethod
+    def _recompute_pop(trade: dict, spot: float, iv: float) -> Optional[float]:
+        """POP on the confirmed premium/breakevens and real ATM IV."""
+        if not spot or spot <= 0:
+            return trade.get("pop")
+        trade_iv = iv if iv and iv > 0 else 0.30
+        dte = trade.get("dte", 30)
+        strategy = trade.get("strategy", "")
+        be_low = trade.get("breakeven_low") or trade.get("breakeven")
+        be_high = trade.get("breakeven_high")
+        pop = None
+        if strategy == "BEAR_CALL_SPREAD":
+            if be_high and be_high > 0:
+                pop = OptionsAdvisor._estimate_pop(spot, 0.01, be_high, trade_iv, dte)
+        elif be_high is not None and be_low and be_low > 0:
+            pop = OptionsAdvisor._estimate_pop(spot, be_low, be_high, trade_iv, dte)
+        elif be_low and be_low > 0:
+            pop = OptionsAdvisor._estimate_pop(spot, be_low, None, trade_iv, dte)
+        return round(pop * 100, 1) if pop is not None else None
+
+    @staticmethod
+    def _high_prob_gate(
+        trade: dict,
+        real_atm_iv: Optional[float],
+        hv_20: Optional[float],
+        upcoming_events: list[dict],
+    ) -> tuple[bool, list[str]]:
+        """Decide whether a trade is a HIGH-PROBABILITY recommendation.
+
+        A trade must clear ALL of:
+          • real-premium POP ≥ OPTIONS_MIN_POP (default 70%)
+          • IV richness: ATM IV > 20-day HV (options actually overpriced)
+          • liquidity: worst-leg OI ≥ min, bid/ask spread ≤ max
+          • no binary (earnings) event on/before expiry
+        A HIGH-impact macro event before expiry does not disqualify but is
+        recorded as a caution (and requires a slightly higher POP cushion).
+        """
+        reasons: list[str] = []
+        dte = trade.get("dte", 30)
+
+        # Only real-premium confirmed trades can be "high probability"
+        if not trade.get("confirmed"):
+            return False, ["premium not confirmed on MooMoo real-time book"]
+
+        pop = trade.get("pop")
+        macro_hi = trade.get("macro_high_impact") or []
+        min_pop = OPTIONS_MIN_POP + (2.0 if macro_hi else 0.0)
+        if pop is None:
+            return False, ["no POP"]
+        if pop < min_pop:
+            reasons.append(
+                f"POP {pop:.0f}% < required {min_pop:.0f}%"
+                + (" (raised for macro event)" if macro_hi else "")
+            )
+
+        # IV richness
+        if real_atm_iv is not None and hv_20 is not None and real_atm_iv <= hv_20:
+            reasons.append(
+                f"IV {real_atm_iv*100:.0f}% not above HV {hv_20*100:.0f}% "
+                f"(premium not overpriced)"
+            )
+
+        # Liquidity
+        min_oi = trade.get("min_oi")
+        if min_oi is not None and min_oi < OPTIONS_MIN_OPEN_INTEREST:
+            reasons.append(f"thin liquidity (min OI {min_oi})")
+        wsp = trade.get("worst_spread_pct")
+        if wsp is not None and wsp > OPTIONS_MAX_BID_ASK_PCT:
+            reasons.append(f"wide bid/ask ({wsp*100:.0f}%)")
+
+        # Binary earnings risk before expiry → disqualify
+        for ev in (upcoming_events or []):
+            if ev.get("event") == "Earnings Report" and ev.get("days_away", 999) <= dte:
+                reasons.append(
+                    f"earnings in {ev['days_away']}d (before expiry) — binary risk"
+                )
+                break
+
+        return (len(reasons) == 0), reasons
+
     def build_weekly_portfolio(
         self,
         results: list[dict],
@@ -142,27 +346,41 @@ class OptionsAdvisor:
         Returns:
             dict with trades list, totals, and target metrics.
         """
-        # Collect all viable trade candidates from weekly trades
+        # Collect all viable trade candidates. Post-gate, the portfolio is
+        # filled ONLY with high-probability trades that were confirmed on the
+        # real MooMoo book (see confirm_and_gate). We consider weekly trades
+        # first (DTE ≤ 9, the "$5K/week" cadence) but fall back to any gated
+        # trade so the target can still be pursued on quiet weeks.
         candidates = []
+        seen_keys: set = set()
         for r in results:
+            if not r.get("iv_level_pass"):
+                continue
             if r.get("premium_score", 0) < OPTIONS_MIN_PREMIUM_SCORE:
                 continue
-            # Prefer weekly_trades (DTE ≤ 9); fall back to regular trades
-            trade_list = r.get("weekly_trades") or []
-            if not trade_list:
-                trade_list = [
-                    t for t in r.get("trades", [])
-                    if t.get("dte", 99) <= 9
-                ]
+            weekly = r.get("weekly_trades") or []
+            regular = r.get("trades") or []
+            # Weekly first, then all other gated trades (any DTE). The
+            # high-probability gate + dedup below are the real controls — a
+            # gated mid-term credit spread is still valid weekly income and
+            # must not be dropped just for sitting outside the weekly window.
+            trade_list = weekly + regular
             for trade in trade_list:
                 if trade.get("strategy") == "EVENT_WARNING":
                     continue
                 if trade.get("premium", 0) <= 0:
                     continue
-                # Filter: only include trades with POP ≥ 60%
-                pop = trade.get("pop")
-                if pop is not None and pop < 60.0:
+                # HIGH-PROBABILITY GATE — only confirmed, gated trades qualify.
+                if not trade.get("high_prob"):
                     continue
+                key = (
+                    r["ticker"], trade.get("strategy"),
+                    trade.get("expiry"), trade.get("strike"),
+                )
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                pop = trade.get("pop")
 
                 premium_per_contract = trade["premium"] * 100
                 max_profit = trade.get("max_profit", 0)
@@ -170,8 +388,14 @@ class OptionsAdvisor:
 
                 if max_loss <= 0 or max_profit <= 0:
                     continue
-                # Filter: max loss must not exceed 2× max profit
-                if max_loss > max_profit * 2:
+                # These trades already cleared the high-probability gate
+                # (POP ≥ 70%, IV>HV, liquid, no binary event). High-POP credit
+                # spreads inherently risk more than they collect (a 30-delta
+                # put spread is ~1:4), so we DON'T impose the old 2× R/R cap
+                # here — that would reject exactly the trades the gate surfaces.
+                # We only block pathological tail-risk selling (max loss > 8×
+                # the credit), where a single loss wipes out many wins.
+                if max_loss > max_profit * 8:
                     continue
 
                 rr_ratio = max_profit / max_loss
@@ -405,6 +629,173 @@ class OptionsAdvisor:
             },
         }
 
+    # ------------------------------------------------------------------ #
+    # Two-part portfolio: Part 1 (high-conviction) + Part 2 (target fillers)
+    # ------------------------------------------------------------------ #
+    _TIER_OF = {
+        "IRON_BUTTERFLY": "aggressive",
+        "IRON_CONDOR": "moderate", "JADE_LIZARD": "moderate",
+        "CREDIT_PUT_SPREAD": "conservative", "BEAR_CALL_SPREAD": "conservative",
+        "CASH_SECURED_PUT": "conservative",
+    }
+
+    def build_two_part_portfolio(
+        self,
+        results: list[dict],
+        target: float = 4000.0,
+        max_contracts: int = 30,
+        max_per_ticker: int = 5,
+        fill_min_pop: float = 55.0,
+    ) -> dict:
+        """Build a two-part weekly portfolio toward `target` (default $4K).
+
+        Part 1 — CORE: only trades that cleared the full high-probability gate
+                 (POP ≥ 70%, IV>HV, liquid, no binary event). Real-premium.
+        Part 2 — FILL: if the core falls short of the target, top it up with
+                 confirmed real-premium trades that JUST missed the gate
+                 (fill_min_pop ≤ POP < 70%, still liquid, no earnings before
+                 expiry). Clearly labelled lower-conviction.
+
+        Returns a dict with core_trades / fill_trades and combined totals. The
+        `trades` key holds core+fill for any single-list consumer.
+        """
+        core = self.build_weekly_portfolio(
+            results, target_premium=target,
+            max_contracts=max_contracts, max_per_ticker=max_per_ticker,
+        )
+        for t in core["trades"]:
+            t["part"] = "core"
+
+        used_keys = {
+            (t["ticker"], t["strategy"], t.get("expiry"), t.get("action"))
+            for t in core["trades"]
+        }
+        used_tickers: dict[str, int] = {}
+        for t in core["trades"]:
+            used_tickers[t["ticker"]] = used_tickers.get(t["ticker"], 0) + t["contracts"]
+
+        core_premium = core["total_premium"]
+        core_contracts = core["total_contracts"]
+        core_max_loss = core["total_max_loss"]
+
+        remaining = target - core_premium
+        contracts_left = max_contracts - core_contracts
+
+        # ---- collect FILL candidates (confirmed near-misses) ----
+        fills: list[dict] = []
+        for r in results:
+            if not r.get("iv_level_pass"):
+                continue
+            events = r.get("upcoming_events", [])
+            for trade in (r.get("weekly_trades") or []) + (r.get("trades") or []):
+                if trade.get("strategy") == "EVENT_WARNING":
+                    continue
+                if not trade.get("confirmed"):
+                    continue          # fillers must still be real-premium priced
+                if trade.get("high_prob"):
+                    continue          # already eligible for core
+                pop = trade.get("pop")
+                if pop is None or pop < fill_min_pop:
+                    continue
+                if (trade.get("min_oi") or 0) < OPTIONS_MIN_OPEN_INTEREST:
+                    continue
+                if (trade.get("worst_spread_pct") or 1.0) > OPTIONS_MAX_BID_ASK_PCT:
+                    continue
+                dte = trade.get("dte", 30)
+                if any(
+                    e.get("event") == "Earnings Report"
+                    and e.get("days_away", 999) <= dte
+                    for e in events
+                ):
+                    continue          # never fill with binary earnings risk
+                mp = trade.get("max_profit", 0)
+                ml = trade.get("max_loss", 0)
+                if mp <= 0 or ml <= 0 or ml > mp * 8:
+                    continue
+                key = (r["ticker"], trade["strategy"], trade.get("expiry"), trade.get("action"))
+                if key in used_keys:
+                    continue
+                fills.append({
+                    "ticker": r["ticker"], "current_price": r["current_price"],
+                    "strategy": trade["strategy"],
+                    "strategy_display": trade["strategy_display"],
+                    "action": trade["action"], "expiry": trade.get("expiry", ""),
+                    "dte": dte, "premium_per_contract": round(trade["premium"] * 100, 2),
+                    "max_profit_per_contract": mp, "max_loss_per_contract": ml,
+                    "rr_ratio": round(mp / ml, 3), "pop": pop,
+                    "score": r["premium_score"],
+                    "daily_move_pct": trade.get("daily_move_pct") or r.get("daily_move_pct"),
+                    "events_before_expiry": r.get("upcoming_events", []),
+                    "key": key,
+                })
+
+        # Best fillers first: highest POP, then best reward/risk
+        fills.sort(key=lambda c: (c["pop"], c["rr_ratio"]), reverse=True)
+
+        fill_trades: list[dict] = []
+        fill_premium = 0.0
+        fill_contracts = 0
+        fill_max_loss = 0.0
+
+        for c in fills:
+            if remaining <= 0 or contracts_left <= 0:
+                break
+            tk = c["ticker"]
+            tused = used_tickers.get(tk, 0)
+            if tused >= max_per_ticker:
+                continue
+            n_need = max(1, int(remaining / c["premium_per_contract"]) + 1)
+            n = max(1, min(n_need, contracts_left, max_per_ticker - tused))
+            tprem = round(n * c["premium_per_contract"], 2)
+            tml = round(n * c["max_loss_per_contract"], 2)
+            tmp = round(n * c["max_profit_per_contract"], 2)
+            tier = self._TIER_OF.get(c["strategy"], "moderate")
+            fill_trades.append({
+                "ticker": c["ticker"], "current_price": c["current_price"],
+                "strategy": c["strategy"], "strategy_display": c["strategy_display"],
+                "action": c["action"], "expiry": c["expiry"], "dte": c["dte"],
+                "contracts": n, "premium_per_contract": c["premium_per_contract"],
+                "total_premium": tprem,
+                "max_profit_per_contract": c["max_profit_per_contract"],
+                "max_loss_per_contract": c["max_loss_per_contract"],
+                "total_max_profit": tmp, "total_max_loss": tml,
+                "rr_ratio": c["rr_ratio"], "pop": c["pop"],
+                "daily_move_pct": c.get("daily_move_pct"),
+                "events_before_expiry": [
+                    e.get("event", "") for e in c.get("events_before_expiry", [])
+                    if e.get("days_away", 999) <= c["dte"] + 1
+                ],
+                "score": c["score"], "risk_tier": tier, "part": "fill",
+                "remark": f"⚑ Target filler — POP {c['pop']:.0f}% (below 70% bar)",
+            })
+            remaining -= tprem
+            contracts_left -= n
+            fill_premium += tprem
+            fill_contracts += n
+            fill_max_loss += tml
+            used_tickers[tk] = tused + n
+            used_keys.add(c["key"])
+
+        combined_premium = round(core_premium + fill_premium, 2)
+        return {
+            "trades": core["trades"] + fill_trades,
+            "core_trades": core["trades"],
+            "fill_trades": fill_trades,
+            "core_premium": round(core_premium, 2),
+            "fill_premium": round(fill_premium, 2),
+            "total_premium": combined_premium,
+            "core_contracts": core_contracts,
+            "fill_contracts": fill_contracts,
+            "total_contracts": core_contracts + fill_contracts,
+            "target": target,
+            "core_pct_of_target": round(core_premium / target * 100, 1) if target > 0 else 0,
+            "pct_of_target": round(combined_premium / target * 100, 1) if target > 0 else 0,
+            "max_contracts": max_contracts,
+            "total_max_loss": round(core_max_loss + fill_max_loss, 2),
+            "tier_breakdown": core.get("tier_breakdown", {}),
+            "fill_min_pop": fill_min_pop,
+        }
+
     @staticmethod
     def _portfolio_remark(cand: dict, tier: str = "") -> str:
         """Generate a concise remark for a portfolio trade."""
@@ -573,13 +964,17 @@ class OptionsAdvisor:
         if not chains:
             return None
 
-        # 4. Current price
+        # 4. Current price — use the last VALID close. Yahoo frequently returns
+        # a trailing NaN bar for the most recent day (esp. weekends / just after
+        # close); .iloc[-1] would grab that NaN and abort the whole analysis.
         current_price = None
         if price_df is not None and not price_df.empty:
             col = "Close" if "Close" in price_df.columns else "close"
             if col in price_df.columns:
-                current_price = float(price_df[col].iloc[-1])
-        if current_price is None:
+                valid_close = price_df[col].dropna()
+                if not valid_close.empty:
+                    current_price = float(valid_close.iloc[-1])
+        if current_price is None or pd.isna(current_price):
             try:
                 info = stock.info
                 current_price = info.get("currentPrice") or info.get("regularMarketPrice")
@@ -672,9 +1067,15 @@ class OptionsAdvisor:
             upcoming_events, price_df,
         )
 
+        # 10b. IV LEVEL SCREEN — per spec, only consider names whose ATM IV
+        # LEVEL clears the bar (absolute annualized IV, e.g. > 65%). Below the
+        # bar the premium simply is not rich enough; we still return the row
+        # for context/logging but generate NO tradeable recommendations.
+        iv_level_pass = atm_iv is not None and atm_iv >= OPTIONS_MIN_IV_LEVEL
+
         # 11. Trade recommendations (event-aware, movement-aware)
         trades = []
-        if score >= OPTIONS_MIN_PREMIUM_SCORE:
+        if iv_level_pass and score >= OPTIONS_MIN_PREMIUM_SCORE:
             trades = self._recommend_trades(
                 ticker, current_price, score, iv_percentile or 50, chains,
                 upcoming_events, atm_iv=atm_iv, atr=atr_14,
@@ -684,7 +1085,7 @@ class OptionsAdvisor:
         # 12. Weekly trades for portfolio (advanced strategies, DTE ≤ 9)
         weekly_trades = []
         wk_chain = chains.get("weekly")
-        if wk_chain:
+        if iv_level_pass and wk_chain:
             weekly_trades = self._generate_weekly_trades(
                 ticker, current_price, score, iv_percentile or 50,
                 atm_iv, hv_20 or 0, wk_chain, upcoming_events,
@@ -721,20 +1122,31 @@ class OptionsAdvisor:
 
             trade["pop"] = round(pop * 100, 1) if pop is not None else None
 
-        # Get company name
+        # Get company name + sector (for segment/sector event context)
         name = ticker
+        sector = None
+        industry = None
         try:
             info = stock.info
             name = info.get("shortName") or info.get("longName") or ticker
+            sector = info.get("sector")
+            industry = info.get("industry")
         except Exception:
             pass
+
+        from research_agents.macro_calendar import sector_catalyst_note
+        sector_note = sector_catalyst_note(sector, industry)
 
         return {
             "ticker": ticker,
             "name": name,
+            "sector": sector,
+            "industry": industry,
+            "sector_note": sector_note,
             "current_price": round(current_price, 2),
             "premium_score": score,
             # Volatility
+            "iv_level_pass": iv_level_pass,
             "atm_iv": round(atm_iv, 4),
             "hv_20": round(hv_20, 4) if hv_20 else None,
             "hv_10": round(hv_10, 4) if hv_10 else None,

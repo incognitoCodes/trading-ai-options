@@ -102,3 +102,31 @@ OPTIONS_MIN_PREMIUM_SCORE = 30    # Min score to include in report
 HV_WINDOW_SHORT = 10              # 10-day realized vol
 HV_WINDOW_STANDARD = 20           # 20-day realized vol
 HV_WINDOW_LONG = 60               # 60-day realized vol
+
+# ---------------------------------------------------------------------------
+# Options Advisory — High-conviction screen (per Abhijit's spec)
+# ---------------------------------------------------------------------------
+# Only consider names whose ATM implied volatility LEVEL clears this bar.
+# Absolute annualized IV as a decimal (0.65 = 65%). This is a deliberately
+# selective screen — only genuinely high-vol names (rich raw premium) pass.
+OPTIONS_MIN_IV_LEVEL = float(os.environ.get("OPTIONS_MIN_IV_LEVEL", "0.65"))
+
+# A trade is only RECOMMENDED if its probability of profit (computed on the
+# real MooMoo premium) clears this bar, plus IV>HV richness, liquidity, and
+# no binary (earnings) event before expiry. "High probability" gate.
+OPTIONS_MIN_POP = float(os.environ.get("OPTIONS_MIN_POP", "70.0"))
+
+# Worst-leg bid/ask spread (as % of mid) allowed for a trade to count as
+# liquid enough to recommend. Wider = the fill you actually get is uncertain.
+OPTIONS_MAX_BID_ASK_PCT = float(os.environ.get("OPTIONS_MAX_BID_ASK_PCT", "0.18"))
+
+# Weekly premium-income target for the two-part portfolio (Part 1 high-conviction
+# + Part 2 target fillers combine toward this).
+OPTIONS_WEEKLY_TARGET = float(os.environ.get("OPTIONS_WEEKLY_TARGET", "4000"))
+
+# Pull ACTUAL premium from MooMoo OpenD real-time data (two-stage: yfinance
+# screens the universe, MooMoo confirms the shortlist at US market open).
+# Set to "0" to disable and fall back to yfinance premiums (clearly labeled).
+OPTIONS_USE_MOOMOO_REALTIME = os.environ.get("OPTIONS_USE_MOOMOO_REALTIME", "1") != "0"
+OPEND_HOST = os.environ.get("OPEND_HOST", "127.0.0.1")
+OPEND_PORT = int(os.environ.get("OPEND_PORT", "11111"))
