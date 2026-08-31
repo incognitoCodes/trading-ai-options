@@ -5,4 +5,6 @@
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DIR"
-"$DIR/venv/bin/python" -m research_agents.run_options_daily
+# venv lives OUTSIDE iCloud-synced ~/Documents to avoid compiled-.so corruption.
+VENV="${TRADING_AI_VENV:-$HOME/.venvs/trading_ai}"
+"$VENV/bin/python" -m research_agents.run_options_daily

@@ -22,7 +22,13 @@ from datetime import datetime
 from email.mime.text import MIMEText
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-VENV_DIR = os.path.join(PROJECT_ROOT, "venv")
+# The venv lives OUTSIDE iCloud-synced ~/Documents. iCloud periodically offloads
+# and makes conflict-copies of compiled .so files (numpy/scipy/curl_cffi), which
+# corrupts any venv kept inside the project folder. Keeping it under ~/.venvs
+# (never synced) is the durable fix. Override with TRADING_AI_VENV if needed.
+VENV_DIR = os.environ.get(
+    "TRADING_AI_VENV", os.path.expanduser("~/.venvs/trading_ai")
+)
 VENV_PYTHON = os.path.join(VENV_DIR, "bin", "python")
 REQUIREMENTS_LOCK = os.path.join(PROJECT_ROOT, "requirements.lock")
 LOG_DIR = os.path.join(PROJECT_ROOT, "reports")
@@ -85,12 +91,12 @@ Attempted {MAX_RETRIES + 1} times including a venv rebuild.
 --- Action Required ---
 SSH into your machine or open Terminal and run:
   cd {PROJECT_ROOT}
-  venv/bin/python -m {PIPELINES.get(pipeline_name, ('???',))[0]}
+  {VENV_PYTHON} -m {PIPELINES.get(pipeline_name, ('???',))[0]}
 
-If that fails, rebuild the venv:
-  rm -rf venv
-  python3 -m venv venv
-  venv/bin/pip install -r requirements.lock
+If that fails, rebuild the venv (kept OUTSIDE iCloud to avoid corruption):
+  rm -rf {VENV_DIR}
+  /usr/local/bin/python3.11 -m venv {VENV_DIR}
+  {VENV_DIR}/bin/pip install -r requirements.lock
 """
 
     msg = MIMEText(body, "plain")
