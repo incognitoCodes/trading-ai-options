@@ -85,7 +85,7 @@ class PortfolioReportGenerator:
     --border-light: #F0F2F5;
   }}
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-  body {{ font-family: 'Georgia', 'Times New Roman', serif; background: var(--bg); color: var(--text); line-height: 1.6; }}
+  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; -webkit-font-smoothing: antialiased; }}
   .container {{ max-width: 1100px; margin: 0 auto; padding: 0 16px; }}
   .report-header {{
     background: linear-gradient(135deg, #1B5E20 0%, #2E7D32 60%, #388E3C 100%);
@@ -97,8 +97,8 @@ class PortfolioReportGenerator:
   .report-header .subtitle {{ font-size: 14px; opacity: 0.85; font-style: italic; }}
   .report-header .meta {{ font-size: 12px; opacity: 0.7; margin-top: 8px; font-family: 'Helvetica Neue', Arial, sans-serif; }}
 
-  .section {{ background: var(--card-bg); border: 1px solid var(--border); border-radius: 4px; margin: 16px auto; max-width: 1100px; overflow: hidden; }}
-  .section-header {{ padding: 12px 24px; font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 14px; font-weight: 600; letter-spacing: 1px; text-transform: uppercase; color: white; }}
+  .section {{ background: var(--card-bg); border: 1px solid var(--border-light); border-radius: 14px; margin: 18px auto; max-width: 1100px; overflow: hidden; box-shadow: 0 2px 12px rgba(16,24,40,0.06); }}
+  .section-header {{ background: linear-gradient(135deg, var(--primary-dark), var(--primary)); border-left: 4px solid var(--accent); padding: 14px 24px; font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 14px; font-weight: 600; letter-spacing: 1px; text-transform: uppercase; color: white; }}
   .section-header.sell {{ background: var(--danger); }}
   .section-header.trim {{ background: var(--warning); }}
   .section-header.add {{ background: var(--success); }}
@@ -125,12 +125,12 @@ class PortfolioReportGenerator:
   .muted {{ color: var(--text-muted); }}
 
   .overview-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }}
-  .overview-card {{ border: 1px solid var(--border); border-radius: 4px; padding: 14px; text-align: center; }}
+  .overview-card {{ border: 1px solid var(--border-light); border-radius: 12px; padding: 14px; box-shadow: 0 1px 6px rgba(16,24,40,0.05); text-align: center; }}
   .overview-card .label {{ font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted); font-family: 'Helvetica Neue', Arial, sans-serif; margin-bottom: 4px; }}
   .overview-card .value {{ font-size: 22px; font-weight: 700; font-family: 'Helvetica Neue', Arial, sans-serif; }}
   .overview-card .sub {{ font-size: 11px; color: var(--text-secondary); margin-top: 4px; }}
 
-  .idea-card {{ border: 1px solid var(--border); border-radius: 4px; padding: 16px 20px; margin: 12px 0; background: white; }}
+  .idea-card {{ border: 1px solid var(--border-light); border-radius: 12px; padding: 16px 20px; margin: 14px 0; background: white; box-shadow: 0 2px 10px rgba(16,24,40,0.06); }}
   .idea-card.sell {{ border-left: 5px solid var(--danger); }}
   .idea-card.trim {{ border-left: 5px solid var(--warning); }}
   .idea-card.add {{ border-left: 5px solid var(--success); }}
