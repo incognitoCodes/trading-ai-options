@@ -107,14 +107,15 @@ HV_WINDOW_LONG = 60               # 60-day realized vol
 # Options Advisory — High-conviction screen (per Abhijit's spec)
 # ---------------------------------------------------------------------------
 # Only consider names whose ATM implied volatility LEVEL clears this bar.
-# Absolute annualized IV as a decimal (0.65 = 65%). This is a deliberately
-# selective screen — only genuinely high-vol names (rich raw premium) pass.
-OPTIONS_MIN_IV_LEVEL = float(os.environ.get("OPTIONS_MIN_IV_LEVEL", "0.65"))
+# Absolute annualized IV as a decimal (0.60 = 60%). This screen keeps the
+# focus on higher-vol names with richer raw premium while still surfacing
+# candidates on most days.
+OPTIONS_MIN_IV_LEVEL = float(os.environ.get("OPTIONS_MIN_IV_LEVEL", "0.60"))
 
 # A trade is only RECOMMENDED if its probability of profit (computed on the
 # real MooMoo premium) clears this bar, plus IV>HV richness, liquidity, and
-# no binary (earnings) event before expiry. "High probability" gate.
-OPTIONS_MIN_POP = float(os.environ.get("OPTIONS_MIN_POP", "70.0"))
+# no binary (earnings) event before expiry. Probability gate.
+OPTIONS_MIN_POP = float(os.environ.get("OPTIONS_MIN_POP", "50.0"))
 
 # Worst-leg bid/ask spread (as % of mid) allowed for a trade to count as
 # liquid enough to recommend. Wider = the fill you actually get is uncertain.

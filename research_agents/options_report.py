@@ -16,7 +16,7 @@ import os
 import logging
 from datetime import datetime
 
-from research_agents.config import REPORT_DIR
+from research_agents.config import REPORT_DIR, OPTIONS_MIN_POP
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ class OptionsReportGenerator:
         backtest_summary: str = None,
         gate_summary: dict = None,
         macro_events: list[dict] = None,
-        iv_min_level: float = 0.65,
+        iv_min_level: float = 0.60,
         positions: list = None,
     ) -> str:
         """Generate a complete HTML options advisory report.
@@ -258,7 +258,7 @@ class OptionsReportGenerator:
     <strong>2. Real-time premium &mdash;</strong> the actual bid/ask of every leg
     is pulled from MooMoo at the US open to compute the true net credit.<br>
     <strong>3. High-probability gate &mdash;</strong> a trade is only recommended
-    if its POP (on the real premium) is <strong>&ge; 70%</strong>, IV exceeds
+    if its POP (on the real premium) is <strong>&ge; {OPTIONS_MIN_POP:.0f}%</strong>, IV exceeds
     realized vol, the chain is liquid, and no earnings land before expiry.<br>
     <strong>4. Event overlay &mdash;</strong> upcoming company, sector, and US
     macro catalysts (FOMC/CPI/jobs) are checked against each expiry.
@@ -275,7 +275,7 @@ class OptionsReportGenerator:
   <h2 style="color:#e65100; border-color:#f57f17;">No high-probability trades today</h2>
   <div style="font-size:13px; color:#555; line-height:1.7;">
     Nothing cleared the full screen today: <strong>ATM IV &gt; {iv_min_level*100:.0f}%</strong>
-    &rarr; real-time premium confirmation &rarr; <strong>POP &ge; 70%</strong> with
+    &rarr; real-time premium confirmation &rarr; <strong>POP &ge; {OPTIONS_MIN_POP:.0f}%</strong> with
     IV&gt;HV, liquid strikes, and no binary event before expiry.
     {f'{n} candidate trade(s) were evaluated but none passed the probability gate.' if n else 'No names passed the IV level screen.'}
     <br><br>
@@ -502,7 +502,7 @@ class OptionsReportGenerator:
       </td>
       <td style="text-align:right; color:#c62828;">${t['total_max_loss']:,.0f}</td>
       <td style="text-align:center; font-size:11px;">{trade_rr}</td>
-      <td style="text-align:center; font-size:11px; font-weight:600; color:{'#2e7d32' if (t.get('pop') or 0) >= 70 else '#f57f17' if (t.get('pop') or 0) >= 60 else '#c62828'};">
+      <td style="text-align:center; font-size:11px; font-weight:600; color:{'#2e7d32' if (t.get('pop') or 0) >= OPTIONS_MIN_POP else '#f57f17' if (t.get('pop') or 0) >= OPTIONS_MIN_POP - 10 else '#c62828'};">
         {f"{t['pop']:.0f}%" if t.get('pop') else '—'}
       </td>
       <td style="font-size:11px; color:#555;">{t.get('remark','')}</td>
@@ -540,7 +540,7 @@ class OptionsReportGenerator:
                                  round(core_prem / target * 100, 1) if target else 0)
         total_max_loss = portfolio.get("total_max_loss", 0)
         max_contracts = portfolio.get("max_contracts", 40)
-        fill_min_pop = portfolio.get("fill_min_pop", 55)
+        fill_min_pop = portfolio.get("fill_min_pop", max(OPTIONS_MIN_POP - 15.0, 0.0))
 
         # Color for target achievement
         if pct >= 100:
@@ -601,7 +601,7 @@ class OptionsReportGenerator:
             html += f"""
   <div style="font-size:13px; font-weight:700; color:#1b5e20; margin:6px 0 2px;">
     Part 1 &mdash; High-Conviction &nbsp;<span style="font-weight:400; color:#555; font-size:11px;">
-    (POP&nbsp;&ge;&nbsp;70%, real-time confirmed, IV&gt;HV, no binary event)</span>
+    (POP&nbsp;&ge;&nbsp;{OPTIONS_MIN_POP:.0f}%, real-time confirmed, IV&gt;HV, no binary event)</span>
   </div>
   {self._PTABLE_HEADER}{rows}
     <tr class="portfolio-total">
@@ -618,7 +618,7 @@ class OptionsReportGenerator:
             html += f"""
   <div style="font-size:13px; font-weight:700; color:#e65100; margin:14px 0 2px;">
     Part 2 &mdash; Target Fillers &nbsp;<span style="font-weight:400; color:#555; font-size:11px;">
-    (confirmed real-time premium, POP {fill_min_pop:.0f}&ndash;70% &mdash; added to reach the ${target:,.0f} target; lower conviction)</span>
+    (confirmed real-time premium, POP {fill_min_pop:.0f}&ndash;{OPTIONS_MIN_POP:.0f}% &mdash; added to reach the ${target:,.0f} target; lower conviction)</span>
   </div>
   {self._PTABLE_HEADER}{rows}
     <tr class="portfolio-total">
@@ -638,10 +638,10 @@ class OptionsReportGenerator:
 
   <div style="margin-top:10px; font-size:11px; color:#555; border-top:1px solid #a5d6a7; padding-top:8px;">
     &#x2705; <strong>Part 1</strong> trades cleared the full high-probability gate
-    (POP&nbsp;&ge;&nbsp;70% on <strong>MooMoo real-time premium</strong>, IV&gt;HV,
+    (POP&nbsp;&ge;&nbsp;{OPTIONS_MIN_POP:.0f}% on <strong>MooMoo real-time premium</strong>, IV&gt;HV,
     liquid strikes, no binary event before expiry).
     &#x2691; <strong>Part 2</strong> trades are real-time-priced near-misses
-    (POP&nbsp;{fill_min_pop:.0f}&ndash;70%) added only to reach the ${target:,.0f}
+    (POP&nbsp;{fill_min_pop:.0f}&ndash;{OPTIONS_MIN_POP:.0f}%) added only to reach the ${target:,.0f}
     weekly target &mdash; treat them as lower conviction and size accordingly.
     Premium is the confirmed net credit; actual fills may vary. Max
     {max_contracts} contracts for margin. <strong>NOT financial advice.</strong>
@@ -877,7 +877,7 @@ class OptionsReportGenerator:
                             f'font-weight:600;margin-left:4px;" title="{why}">Not gated{why}</span>'
                         )
                     pop_str = (
-                        f'| POP: <strong style="color:{"#2e7d32" if (pop or 0) >= 70 else "#f57f17"};">'
+                        f'| POP: <strong style="color:{"#2e7d32" if (pop or 0) >= OPTIONS_MIN_POP else "#f57f17"};">'
                         f'{pop:.0f}%</strong>' if pop is not None else ""
                     )
                     # Macro/sector caution for this expiry

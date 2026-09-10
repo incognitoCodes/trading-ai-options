@@ -2,7 +2,7 @@
 moomoo_quotes.py — Real-time option premium confirmer via MooMoo OpenD.
 
 The advisory runs a two-stage flow:
-  Stage 1 (screen):  yfinance chains screen the whole universe for IV>65%
+  Stage 1 (screen):  yfinance chains screen the whole universe for high IV
                      names and build candidate trades (strikes, expiry, legs).
   Stage 2 (confirm): for each candidate, THIS module pulls the ACTUAL
                      real-time bid/ask/last/IV/OI for every leg from MooMoo

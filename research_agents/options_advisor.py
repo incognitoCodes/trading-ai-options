@@ -135,7 +135,7 @@ class OptionsAdvisor:
         """Confirm candidate trades on MooMoo real-time data and apply the
         high-probability gate.
 
-        For every candidate trade on every (already IV>65%) name:
+        For every candidate trade on every name that cleared the IV screen:
           1. Pull the ACTUAL premium/greeks/OI for its legs from MooMoo.
           2. Overwrite the estimated economics with the confirmed ones and
              recompute POP on the real ATM IV.
@@ -273,7 +273,7 @@ class OptionsAdvisor:
         """Decide whether a trade is a HIGH-PROBABILITY recommendation.
 
         A trade must clear ALL of:
-          • real-premium POP ≥ OPTIONS_MIN_POP (default 70%)
+          • real-premium POP ≥ OPTIONS_MIN_POP (default 50%)
           • IV richness: ATM IV > 20-day HV (options actually overpriced)
           • liquidity: worst-leg OI ≥ min, bid/ask spread ≤ max
           • no binary (earnings) event on/before expiry
@@ -389,7 +389,7 @@ class OptionsAdvisor:
                 if max_loss <= 0 or max_profit <= 0:
                     continue
                 # These trades already cleared the high-probability gate
-                # (POP ≥ 70%, IV>HV, liquid, no binary event). High-POP credit
+                # (POP ≥ 50%, IV>HV, liquid, no binary event). High-POP credit
                 # spreads inherently risk more than they collect (a 30-delta
                 # put spread is ~1:4), so we DON'T impose the old 2× R/R cap
                 # here — that would reject exactly the trades the gate surfaces.
@@ -645,20 +645,25 @@ class OptionsAdvisor:
         target: float = 4000.0,
         max_contracts: int = 30,
         max_per_ticker: int = 5,
-        fill_min_pop: float = 55.0,
+        fill_min_pop: float = None,
     ) -> dict:
         """Build a two-part weekly portfolio toward `target` (default $4K).
 
         Part 1 — CORE: only trades that cleared the full high-probability gate
-                 (POP ≥ 70%, IV>HV, liquid, no binary event). Real-premium.
+                 (POP ≥ 50%, IV>HV, liquid, no binary event). Real-premium.
         Part 2 — FILL: if the core falls short of the target, top it up with
                  confirmed real-premium trades that JUST missed the gate
-                 (fill_min_pop ≤ POP < 70%, still liquid, no earnings before
-                 expiry). Clearly labelled lower-conviction.
+                 (fill_min_pop ≤ POP < OPTIONS_MIN_POP, still liquid, no
+                 earnings before expiry). Clearly labelled lower-conviction.
 
         Returns a dict with core_trades / fill_trades and combined totals. The
         `trades` key holds core+fill for any single-list consumer.
         """
+        if fill_min_pop is None:
+            # Fillers sit just below the core POP bar, keeping the same
+            # 15-point band the gate has used historically, so Part 2 stays
+            # coherent whenever the core bar moves via OPTIONS_MIN_POP.
+            fill_min_pop = max(OPTIONS_MIN_POP - 15.0, 0.0)
         core = self.build_weekly_portfolio(
             results, target_premium=target,
             max_contracts=max_contracts, max_per_ticker=max_per_ticker,
@@ -766,7 +771,7 @@ class OptionsAdvisor:
                     if e.get("days_away", 999) <= c["dte"] + 1
                 ],
                 "score": c["score"], "risk_tier": tier, "part": "fill",
-                "remark": f"⚑ Target filler — POP {c['pop']:.0f}% (below 70% bar)",
+                "remark": f"⚑ Target filler — POP {c['pop']:.0f}% (below {OPTIONS_MIN_POP:.0f}% bar)",
             })
             remaining -= tprem
             contracts_left -= n
@@ -1068,7 +1073,7 @@ class OptionsAdvisor:
         )
 
         # 10b. IV LEVEL SCREEN — per spec, only consider names whose ATM IV
-        # LEVEL clears the bar (absolute annualized IV, e.g. > 65%). Below the
+        # LEVEL clears the bar (absolute annualized IV, e.g. > 60%). Below the
         # bar the premium simply is not rich enough; we still return the row
         # for context/logging but generate NO tradeable recommendations.
         iv_level_pass = atm_iv is not None and atm_iv >= OPTIONS_MIN_IV_LEVEL

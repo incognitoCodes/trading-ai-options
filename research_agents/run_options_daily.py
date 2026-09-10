@@ -120,7 +120,7 @@ def run(
                 f"{r['ticker']}({r['atm_iv']*100:.0f}%)" for r in iv_pass[:12]
             )
         )
-    # The email only considers IV>65% names from here on.
+    # The email only considers names that cleared the IV screen from here on.
     options_results = iv_pass
 
     # Step 3a: Stage 2 — confirm ACTUAL premium on MooMoo real-time book and
@@ -148,7 +148,7 @@ def run(
                if gate_summary.get("as_of") else "")
         )
     elif not options_results:
-        logger.info("Step 3a: No IV>65% names today — skipping real-time confirm.")
+        logger.info("Step 3a: No names cleared the IV screen today — skipping real-time confirm.")
 
     top_opps = advisor.get_top_opportunities(options_results, n=20)
     if top_opps:
