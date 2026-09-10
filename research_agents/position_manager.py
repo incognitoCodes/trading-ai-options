@@ -182,6 +182,41 @@ class OptionPositionAdvisor:
         self._enrich(positions)
         return positions
 
+    def fetch_stock_holdings(self, trd_env=None) -> dict:
+        """Return current LONG stock holdings as {ticker: {...}}.
+
+        Used to target covered-call writes at names the trader already owns.
+        Option positions are skipped, as is anything under 100 shares (the
+        minimum to write one covered call). Empty dict if OpenD is unavailable.
+        """
+        if not self.is_connected:
+            return {}
+        trd_env = trd_env or self._default_env()
+        try:
+            ret, data = self._trade_ctx.position_list_query(trd_env=trd_env)
+        except Exception as e:
+            logger.warning(f"position_list_query failed: {e}")
+            return {}
+        if ret != RET_OK or data is None or data.empty:
+            return {}
+
+        holdings: dict = {}
+        for _, row in data.iterrows():
+            code = row.get("code", "")
+            if parse_option_code(code):
+                continue  # skip option positions
+            qty = _f(row.get("qty"))
+            if qty < 100:
+                continue  # need at least 100 shares for one covered call
+            ticker = code.split(".")[-1] if "." in code else code
+            holdings[ticker] = {
+                "shares": int(qty),
+                "cost_price": _f(row.get("cost_price")) or _f(row.get("average_cost")),
+                "current_price": _f(row.get("nominal_price")),
+            }
+        logger.info(f"Fetched {len(holdings)} stock holding(s) for covered calls.")
+        return holdings
+
     def _enrich(self, positions: list[dict]):
         if not positions:
             return

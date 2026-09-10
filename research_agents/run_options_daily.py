@@ -92,6 +92,26 @@ def run(
     report_gen = OptionsReportGenerator()
     emailer = EmailSender()
 
+    # Step 0: Current stock holdings (for covered-call writes). Best-effort —
+    # if OpenD is down we simply generate no covered calls this run.
+    holdings = {}
+    if OPTIONS_USE_MOOMOO_REALTIME:
+        try:
+            from research_agents.position_manager import OptionPositionAdvisor
+            _pos = OptionPositionAdvisor()
+            if _pos.connect():
+                holdings = _pos.fetch_stock_holdings()
+                _pos.close()
+        except Exception as e:
+            logger.warning(f"  Holdings fetch skipped: {e}")
+    if holdings:
+        logger.info(
+            f"  Holdings for covered calls: "
+            + ", ".join(f"{t}({h['shares']}sh)" for t, h in list(holdings.items())[:12])
+        )
+        # Always analyze held names (even outside the universe / pre-filter).
+        watchlist = list(dict.fromkeys(watchlist + list(holdings.keys())))
+
     # Step 1: VIX Context
     logger.info("Step 1/5: Fetching VIX and market volatility context...")
     vix_context = advisor.get_vix_context()
@@ -113,7 +133,7 @@ def run(
     if OPTIONS_PREFILTER_TOP_N and 0 < OPTIONS_PREFILTER_TOP_N < len(watchlist):
         scan_list = advisor.prefilter_by_dollar_volume(
             price_data, watchlist, OPTIONS_PREFILTER_TOP_N,
-            always_keep=OPTIONS_INDICES,
+            always_keep=OPTIONS_INDICES + list(holdings.keys()),
         )
         logger.info(
             f"  Liquidity pre-filter: {len(watchlist)} -> {len(scan_list)} "
@@ -122,7 +142,9 @@ def run(
 
     # Step 3: Options Analysis (Stage 1 screen — yfinance chains)
     logger.info("Step 3/5: Scanning option chains and scoring premium opportunities...")
-    options_results = advisor.analyze_options(price_data, tickers=scan_list)
+    options_results = advisor.analyze_options(
+        price_data, tickers=scan_list, holdings=holdings,
+    )
 
     # IV LEVEL SCREEN — per spec, only CONSIDER names with ATM IV > threshold.
     iv_pass = [r for r in options_results if r.get("iv_level_pass")]
@@ -137,8 +159,21 @@ def run(
                 f"{r['ticker']}({r['atm_iv']*100:.0f}%)" for r in iv_pass[:12]
             )
         )
-    # The email only considers names that cleared the IV screen from here on.
-    options_results = iv_pass
+    # The email considers names that cleared the IV screen, plus any held name
+    # carrying a covered call (income on shares, generated regardless of the
+    # IV screen). Everything else is dropped from here on.
+    def _has_covered_call(r):
+        return any(
+            t.get("strategy") == "COVERED_CALL"
+            for t in (r.get("trades") or []) + (r.get("weekly_trades") or [])
+        )
+    held_cc = [
+        r for r in options_results
+        if not r.get("iv_level_pass") and _has_covered_call(r)
+    ]
+    if held_cc:
+        logger.info(f"  Plus {len(held_cc)} held name(s) with covered-call writes.")
+    options_results = iv_pass + held_cc
 
     # Step 3a: Stage 2 — confirm ACTUAL premium on MooMoo real-time book and
     # apply the high-probability gate. Runs at US market open (9:30 ET).

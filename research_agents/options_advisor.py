@@ -98,16 +98,20 @@ class OptionsAdvisor:
         self,
         price_data: dict[str, pd.DataFrame],
         tickers: list[str] = None,
+        holdings: dict = None,
     ) -> list[dict]:
         """Analyze option chains for the given tickers.
 
         Args:
             price_data: ticker -> DataFrame of daily OHLCV (1 year).
             tickers: list of tickers to scan. Defaults to OPTIONS_UNIVERSE.
+            holdings: ticker -> holding dict (shares, cost_price). Names here
+                also get a covered-call write generated on the shares held.
 
         Returns:
             list[dict] sorted by premium_score descending.
         """
+        holdings = holdings or {}
         scan_list = tickers or OPTIONS_UNIVERSE
         results = []
         total = len(scan_list)
@@ -118,7 +122,9 @@ class OptionsAdvisor:
                 time.sleep(API_DELAY_SECONDS)
 
             try:
-                result = self._analyze_single(ticker, price_data.get(ticker))
+                result = self._analyze_single(
+                    ticker, price_data.get(ticker), holding=holdings.get(ticker),
+                )
                 if result:
                     results.append(result)
             except Exception as e:
@@ -208,7 +214,12 @@ class OptionsAdvisor:
         as_of = None
 
         for r in results:
-            if not r.get("iv_level_pass"):
+            iv_pass = r.get("iv_level_pass")
+            trade_list = r.get("trades", []) + r.get("weekly_trades", [])
+            has_cc = any(t.get("strategy") == "COVERED_CALL" for t in trade_list)
+            # Names that missed the IV screen are still processed if they carry
+            # a covered call (income on shares you hold), otherwise skipped.
+            if not iv_pass and not has_cc:
                 continue
             ticker = r["ticker"]
             spot = r.get("current_price")
@@ -223,8 +234,12 @@ class OptionsAdvisor:
                     spot_rt = None
             spot_used = spot_rt or spot
 
-            for trade in r.get("trades", []) + r.get("weekly_trades", []):
+            for trade in trade_list:
                 if trade.get("strategy") == "EVENT_WARNING":
+                    continue
+                # If the name did not clear the IV screen, only its covered
+                # call is eligible, not new premium-selling trades.
+                if not iv_pass and trade.get("strategy") != "COVERED_CALL":
                     continue
                 n_candidates += 1
 
@@ -303,7 +318,11 @@ class OptionsAdvisor:
         be_low = trade.get("breakeven_low") or trade.get("breakeven")
         be_high = trade.get("breakeven_high")
         pop = None
-        if strategy == "BEAR_CALL_SPREAD":
+        if strategy == "COVERED_CALL":
+            k = trade.get("strike")
+            if k and k > 0:
+                pop = OptionsAdvisor._estimate_pop(spot, 0.01, k, trade_iv, dte)
+        elif strategy == "BEAR_CALL_SPREAD":
             if be_high and be_high > 0:
                 pop = OptionsAdvisor._estimate_pop(spot, 0.01, be_high, trade_iv, dte)
         elif be_high is not None and be_low and be_low > 0:
@@ -331,6 +350,7 @@ class OptionsAdvisor:
         """
         reasons: list[str] = []
         dte = trade.get("dte", 30)
+        is_covered_call = trade.get("strategy") == "COVERED_CALL"
 
         # Only real-premium confirmed trades can be "high probability"
         if not trade.get("confirmed"):
@@ -347,8 +367,13 @@ class OptionsAdvisor:
                 + (" (raised for macro event)" if macro_hi else "")
             )
 
-        # IV richness
-        if real_atm_iv is not None and hv_20 is not None and real_atm_iv <= hv_20:
+        # IV richness — required for pure premium selling, but NOT for covered
+        # calls, which are income on shares you already own in any IV regime.
+        if (
+            not is_covered_call
+            and real_atm_iv is not None and hv_20 is not None
+            and real_atm_iv <= hv_20
+        ):
             reasons.append(
                 f"IV {real_atm_iv*100:.0f}% not above HV {hv_20*100:.0f}% "
                 f"(premium not overpriced)"
@@ -418,6 +443,8 @@ class OptionsAdvisor:
             for trade in trade_list:
                 if trade.get("strategy") == "EVENT_WARNING":
                     continue
+                if trade.get("strategy") == "COVERED_CALL":
+                    continue  # placed first by the covered-call priority pass
                 if trade.get("premium", 0) <= 0:
                     continue
                 # HIGH-PROBABILITY GATE — only confirmed, gated trades qualify.
@@ -690,8 +717,84 @@ class OptionsAdvisor:
         "IRON_BUTTERFLY": "aggressive",
         "IRON_CONDOR": "moderate", "JADE_LIZARD": "moderate",
         "CREDIT_PUT_SPREAD": "conservative", "BEAR_CALL_SPREAD": "conservative",
-        "CASH_SECURED_PUT": "conservative",
+        "CASH_SECURED_PUT": "conservative", "COVERED_CALL": "conservative",
     }
+
+    def _collect_covered_calls(
+        self, results: list[dict], max_trades: int,
+        max_contracts: int, max_per_ticker: int,
+    ) -> list[dict]:
+        """Select gated covered calls on held names, best first (top priority).
+
+        Returns ready-to-render portfolio trade entries. Sizing is capped by
+        the shares held (contracts_possible), max_per_ticker, the shared
+        contract budget, and the overall trade-count cap. These are income on
+        stock already owned, so their `total_max_loss` is a framework nominal
+        (the premium), not new capital at risk.
+        """
+        cands = []
+        seen = set()
+        for r in results:
+            for trade in (r.get("trades") or []) + (r.get("weekly_trades") or []):
+                if trade.get("strategy") != "COVERED_CALL":
+                    continue
+                if not trade.get("high_prob"):
+                    continue
+                key = (r["ticker"], trade.get("expiry"), trade.get("strike"))
+                if key in seen:
+                    continue
+                seen.add(key)
+                cands.append((r, trade))
+
+        # Best first: highest POP, then best static (premium-only) return.
+        cands.sort(
+            key=lambda rt: (rt[1].get("pop") or 0, rt[1].get("static_return_pct") or 0),
+            reverse=True,
+        )
+
+        out: list[dict] = []
+        contracts_left = max_contracts
+        used_tickers: dict[str, int] = {}
+        for r, trade in cands:
+            if len(out) >= max_trades or contracts_left <= 0:
+                break
+            tk = r["ticker"]
+            tused = used_tickers.get(tk, 0)
+            if tused >= max_per_ticker:
+                continue
+            poss = int(trade.get("contracts_possible") or 1)
+            n = max(1, min(poss, max_per_ticker - tused, contracts_left))
+            ppc = trade.get("premium_per_contract") or round(trade.get("premium", 0) * 100, 2)
+            mppc = trade.get("max_profit") or ppc
+            mlpc = trade.get("max_loss") or ppc
+            out.append({
+                "ticker": tk, "current_price": r.get("current_price"),
+                "strategy": "COVERED_CALL",
+                "strategy_display": trade.get("strategy_display", "Covered Call"),
+                "action": trade.get("action", ""), "expiry": trade.get("expiry", ""),
+                "dte": trade.get("dte", 30), "contracts": n,
+                "premium_per_contract": ppc, "total_premium": round(n * ppc, 2),
+                "max_profit_per_contract": mppc, "max_loss_per_contract": mlpc,
+                "total_max_profit": round(n * mppc, 2),
+                "total_max_loss": round(n * mlpc, 2),
+                "rr_ratio": round(mppc / mlpc, 3) if mlpc else 0,
+                "pop": trade.get("pop"),
+                "share_backed": True,
+                "shares_held": trade.get("shares_held"),
+                "if_called_return_pct": trade.get("if_called_return_pct"),
+                "static_return_pct": trade.get("static_return_pct"),
+                "daily_move_pct": trade.get("daily_move_pct") or r.get("daily_move_pct"),
+                "events_before_expiry": [],
+                "score": r.get("premium_score", 0),
+                "risk_tier": "conservative", "part": "core",
+                "remark": (
+                    f"🟢 Covered call on {trade.get('shares_held', 0)} sh held "
+                    f"— priority income"
+                ),
+            })
+            contracts_left -= n
+            used_tickers[tk] = tused + n
+        return out
 
     def build_two_part_portfolio(
         self,
@@ -719,30 +822,46 @@ class OptionsAdvisor:
             # 15-point band the gate has used historically, so Part 2 stays
             # coherent whenever the core bar moves via OPTIONS_MIN_POP.
             fill_min_pop = max(OPTIONS_MIN_POP - 15.0, 0.0)
+
+        # ---- Priority: covered calls on held names (easy-money income) ----
+        # These are written first, before any premium-selling core trade, and
+        # they consume from the same contract and trade-count budgets.
+        covered_trades = self._collect_covered_calls(
+            results, max_trades=max_trades, max_contracts=max_contracts,
+            max_per_ticker=max_per_ticker,
+        )
+        cc_premium = round(sum(t["total_premium"] for t in covered_trades), 2)
+        cc_contracts = sum(t["contracts"] for t in covered_trades)
+        cc_max_loss = round(sum(t["total_max_loss"] for t in covered_trades), 2)
+
+        # ---- Part 1b: premium-selling core on the remaining budget ----
         core = self.build_weekly_portfolio(
-            results, target_premium=target,
-            max_contracts=max_contracts, max_per_ticker=max_per_ticker,
-            max_trades=max_trades,
+            results, target_premium=max(0.0, target - cc_premium),
+            max_contracts=max(0, max_contracts - cc_contracts),
+            max_per_ticker=max_per_ticker,
+            max_trades=max(0, max_trades - len(covered_trades)),
         )
         for t in core["trades"]:
             t["part"] = "core"
 
-        # Combined core + fill trade count is capped at max_trades. Core is
-        # high-conviction, so it fills these slots first; fillers only top up
-        # whatever slots remain.
-        trades_left = max(0, max_trades - len(core["trades"]))
+        # Covered calls lead the core list (top priority).
+        core_list = covered_trades + core["trades"]
+
+        # Combined core + fill trade count is capped at max_trades. Core (with
+        # covered calls first) fills these slots; fillers only top up the rest.
+        trades_left = max(0, max_trades - len(core_list))
 
         used_keys = {
             (t["ticker"], t["strategy"], t.get("expiry"), t.get("action"))
-            for t in core["trades"]
+            for t in core_list
         }
         used_tickers: dict[str, int] = {}
-        for t in core["trades"]:
+        for t in core_list:
             used_tickers[t["ticker"]] = used_tickers.get(t["ticker"], 0) + t["contracts"]
 
-        core_premium = core["total_premium"]
-        core_contracts = core["total_contracts"]
-        core_max_loss = core["total_max_loss"]
+        core_premium = round(core["total_premium"] + cc_premium, 2)
+        core_contracts = core["total_contracts"] + cc_contracts
+        core_max_loss = round(core["total_max_loss"] + cc_max_loss, 2)
 
         remaining = target - core_premium
         contracts_left = max_contracts - core_contracts
@@ -756,6 +875,8 @@ class OptionsAdvisor:
             for trade in (r.get("weekly_trades") or []) + (r.get("trades") or []):
                 if trade.get("strategy") == "EVENT_WARNING":
                     continue
+                if trade.get("strategy") == "COVERED_CALL":
+                    continue          # covered calls are core-only, never fillers
                 if not trade.get("confirmed"):
                     continue          # fillers must still be real-premium priced
                 if trade.get("high_prob"):
@@ -844,8 +965,9 @@ class OptionsAdvisor:
 
         combined_premium = round(core_premium + fill_premium, 2)
         return {
-            "trades": core["trades"] + fill_trades,
-            "core_trades": core["trades"],
+            "trades": core_list + fill_trades,
+            "core_trades": core_list,
+            "covered_call_trades": covered_trades,
             "fill_trades": fill_trades,
             "core_premium": round(core_premium, 2),
             "fill_premium": round(fill_premium, 2),
@@ -969,6 +1091,7 @@ class OptionsAdvisor:
 
     def _analyze_single(
         self, ticker: str, price_df: Optional[pd.DataFrame],
+        holding: dict = None,
     ) -> Optional[dict]:
         """Full options analysis for one ticker."""
         stock = yf.Ticker(ticker)
@@ -1158,6 +1281,27 @@ class OptionsAdvisor:
                 atr=atr_14, price_ranges=price_ranges,
             )
 
+        # 12b. Covered call on shares already held (income overlay). Generated
+        # regardless of the IV-level screen — it is income on stock you own —
+        # but still subject to liquidity, no-earnings, POP and confirmation
+        # downstream. Prioritized in the portfolio as the "easy money" play.
+        if holding and int(holding.get("shares", 0)) >= 100:
+            cc_chain = chains.get("mid") or chains.get("near")
+            if cc_chain and cc_chain.get("calls") is not None:
+                cc = self._covered_call_trade(
+                    ticker, current_price, cc_chain["expiry"], cc_chain["dte"],
+                    cc_chain["calls"], int(holding["shares"]),
+                    cost_basis=holding.get("cost_price"),
+                )
+                if cc:
+                    # Do not write calls through a binary earnings event.
+                    e_days = next(
+                        (ev["days_away"] for ev in upcoming_events
+                         if ev.get("event") == "Earnings Report"), None,
+                    )
+                    if not (e_days is not None and e_days <= cc["dte"]):
+                        trades.append(cc)
+
         # 13. Compute Probability of Profit (POP) for all trades
         trade_iv = atm_iv if atm_iv and atm_iv > 0 else 0.30  # fallback
         for trade in trades + weekly_trades:
@@ -1169,7 +1313,14 @@ class OptionsAdvisor:
             be_high = trade.get("breakeven_high")
 
             pop = None
-            if strategy == "BEAR_CALL_SPREAD":
+            if strategy == "COVERED_CALL":
+                # Keep premium + shares when price stays below the strike.
+                k = trade.get("strike")
+                if k and k > 0:
+                    pop = self._estimate_pop(
+                        current_price, 0.01, k, trade_iv, dte_val,
+                    )
+            elif strategy == "BEAR_CALL_SPREAD":
                 # Profit when price < breakeven_high (single-sided upper)
                 if be_high and be_high > 0:
                     pop = self._estimate_pop(
@@ -2400,6 +2551,78 @@ class OptionsAdvisor:
                 f"${bid:.2f}/share. If assigned, buy {ticker} at "
                 f"${strike - bid:.2f} effective cost ({otm_pct + bid/price*100:.1f}% "
                 f"below current). {dte} DTE."
+            ),
+        }
+
+    def _covered_call_trade(
+        self, ticker: str, price: float, expiry: str, dte: int,
+        calls: pd.DataFrame, shares: int,
+        min_otm: float = 0.05, cost_basis: Optional[float] = None,
+    ) -> Optional[dict]:
+        """Covered-call write on shares already held.
+
+        Sells an out-of-the-money call about `min_otm` above spot on stock the
+        trader already owns. This is income on an existing position, so its
+        real downside is the shares themselves, not new capital. `max_loss` is
+        set to the premium as a framework nominal, and the trade is flagged
+        `share_backed` so the portfolio does not treat it as defined risk.
+        """
+        if calls is None or calls.empty or shares < 100 or price <= 0:
+            return None
+        target = price * (1 + min_otm)
+        otm = calls[
+            (calls["strike"] >= target)
+            & (calls["strike"] <= price * (1 + min_otm + 0.15))
+            & (calls["openInterest"].fillna(0) >= OPTIONS_MIN_OPEN_INTEREST)
+        ].sort_values("strike")
+        if otm.empty:
+            return None
+
+        row = otm.iloc[0]
+        strike = float(row["strike"])
+        bid = float(row["bid"]) if row["bid"] > 0 else float(row["lastPrice"]) * 0.9
+        if bid <= 0:
+            return None
+        oi = int(row["openInterest"]) if pd.notna(row["openInterest"]) else 0
+        iv = float(row["impliedVolatility"])
+        contracts_possible = int(shares // 100)
+        otm_pct = (strike - price) / price * 100
+        ref = cost_basis if (cost_basis and cost_basis > 0) else price
+        if_called = (bid + max(0.0, strike - price)) * 100  # gain/contract if called
+        static = bid * 100                                   # premium kept if not called
+
+        return {
+            "strategy": "COVERED_CALL",
+            "strategy_display": "Covered Call",
+            "action": (
+                f"Covered Call {expiry}: SELL {contracts_possible}x "
+                f"${strike:.0f}C on {contracts_possible * 100} sh"
+            ),
+            "strike": strike,
+            "expiry": expiry,
+            "dte": dte,
+            "premium": round(bid, 2),
+            "premium_per_contract": round(bid * 100, 2),
+            "max_profit": round(if_called, 2),
+            "max_loss": round(bid * 100, 2),   # nominal; true risk is the held shares
+            "breakeven": round(price - bid, 2),
+            "breakeven_low": round(price - bid, 2),
+            "breakeven_high": None,
+            "otm_pct": round(otm_pct, 1),
+            "open_interest": oi,
+            "iv": round(iv * 100, 1),
+            "share_backed": True,
+            "shares_held": int(shares),
+            "contracts_possible": contracts_possible,
+            "if_called_return_pct": round(if_called / (ref * 100) * 100, 2),
+            "static_return_pct": round(static / (ref * 100) * 100, 2),
+            "cost_basis": round(ref, 2),
+            "rationale": (
+                f"You hold {int(shares)} {ticker}. Sell {contracts_possible}x the "
+                f"${strike:.0f} call ({otm_pct:.1f}% OTM) for ${bid:.2f}/share. Keep "
+                f"the premium if {ticker} stays below ${strike:.0f}; if called away "
+                f"you sell at ${strike:.0f} for a "
+                f"{round(if_called / (ref * 100) * 100, 1)}% gain. {dte} DTE."
             ),
         }
 

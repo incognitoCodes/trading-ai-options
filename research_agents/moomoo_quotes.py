@@ -207,6 +207,8 @@ class MoomooOptionQuotes:
 
         if s == "CASH_SECURED_PUT":
             return [leg("PUT", "SELL", k)]
+        if s == "COVERED_CALL":
+            return [leg("CALL", "SELL", k)]
         if s == "CREDIT_PUT_SPREAD":
             if not kl:
                 return None
@@ -378,6 +380,21 @@ class MoomooOptionQuotes:
                 "max_loss": round((k - net_credit) * 100, 2),
                 "breakeven": round(k - net_credit, 2),
                 "breakeven_low": round(k - net_credit, 2),
+                "breakeven_high": None,
+            }
+        if s == "COVERED_CALL":
+            # Income overlay on shares already owned. Max profit is the premium
+            # plus any run-up to the strike if called away. "max_loss" here is a
+            # framework nominal (the premium) — the real downside is the stock
+            # you already hold, not new capital at risk.
+            k = short_call["strike"]
+            upside = max(0.0, k - spot) if spot else 0.0
+            be = round(spot - net_credit, 2) if spot else None
+            return {
+                "max_profit": round((net_credit + upside) * 100, 2),
+                "max_loss": mp,
+                "breakeven": be,
+                "breakeven_low": be,
                 "breakeven_high": None,
             }
         if s == "CREDIT_PUT_SPREAD":
