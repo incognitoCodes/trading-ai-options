@@ -41,7 +41,7 @@ class DataCollector:
             stock = yf.Ticker(ticker)
             df = stock.history(period=period, auto_adjust=True)
             if df.empty:
-                logger.warning(f"No price data for {ticker}")
+                logger.debug(f"No price data for {ticker}")
                 return None
             # Standardize column names
             df.columns = [c.lower().replace(" ", "_") for c in df.columns]

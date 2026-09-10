@@ -205,6 +205,9 @@ class OptionPositionAdvisor:
             code = row.get("code", "")
             if parse_option_code(code):
                 continue  # skip option positions
+            market = code.split(".")[0] if "." in code else "US"
+            if market != "US":
+                continue  # US-options advisory: skip non-US holdings (e.g. SGX)
             qty = _f(row.get("qty"))
             if qty < 100:
                 continue  # need at least 100 shares for one covered call

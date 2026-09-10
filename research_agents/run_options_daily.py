@@ -62,6 +62,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("run_options_daily")
 
+# The large Russell 1000 scan hits some illiquid or recently-delisted symbols
+# that yfinance logs as a noisy ERROR line each. Those names are simply skipped
+# (the scan continues on valid names), so quiet yfinance's own logger.
+logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+
 
 def run(
     tickers: list[str] = None,
