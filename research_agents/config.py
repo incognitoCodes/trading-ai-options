@@ -137,6 +137,13 @@ OPTIONS_UNIVERSE_NAME = os.environ.get("OPTIONS_UNIVERSE_NAME", "russell1000").l
 # this many, best first.
 OPTIONS_MAX_RECOMMENDATIONS = int(os.environ.get("OPTIONS_MAX_RECOMMENDATIONS", "10"))
 
+# Liquidity pre-filter. Before the expensive option-chain analysis, rank the
+# universe by average dollar volume (a cheap, already-downloaded proxy for
+# option liquidity) and keep only the top N names (index ETFs are always kept).
+# This skips the option-chain fetch on names that would fail the liquidity gate
+# anyway. Set to 0 to disable and analyze the whole universe.
+OPTIONS_PREFILTER_TOP_N = int(os.environ.get("OPTIONS_PREFILTER_TOP_N", "300"))
+
 # Pull ACTUAL premium from MooMoo OpenD real-time data (two-stage: yfinance
 # screens the universe, MooMoo confirms the shortlist at US market open).
 # Set to "0" to disable and fall back to yfinance premiums (clearly labeled).

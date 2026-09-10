@@ -37,7 +37,9 @@ if os.path.exists(_env_file):
                 os.environ.setdefault(key.strip(), value.strip())
 
 from research_agents.data_collector import DataCollector
-from research_agents.options_advisor import OptionsAdvisor, OPTIONS_UNIVERSE
+from research_agents.options_advisor import (
+    OptionsAdvisor, OPTIONS_UNIVERSE, OPTIONS_INDICES,
+)
 from research_agents.options_report import OptionsReportGenerator
 from research_agents.email_sender import EmailSender
 from research_agents.moomoo_quotes import MoomooOptionQuotes
@@ -48,6 +50,7 @@ from research_agents.config import (
     OPTIONS_MIN_IV_LEVEL,
     OPTIONS_WEEKLY_TARGET,
     OPTIONS_MAX_RECOMMENDATIONS,
+    OPTIONS_PREFILTER_TOP_N,
 )
 from research_agents.watchlist import QUICK_SCAN
 
@@ -104,9 +107,22 @@ def run(
     price_data = collector.get_batch_data(watchlist)
     logger.info(f"  Got price data for {len(price_data)} tickers")
 
+    # Step 2b: Liquidity pre-filter — rank by dollar volume and keep the top N
+    # so the expensive option-chain analysis only runs on liquid names.
+    scan_list = watchlist
+    if OPTIONS_PREFILTER_TOP_N and 0 < OPTIONS_PREFILTER_TOP_N < len(watchlist):
+        scan_list = advisor.prefilter_by_dollar_volume(
+            price_data, watchlist, OPTIONS_PREFILTER_TOP_N,
+            always_keep=OPTIONS_INDICES,
+        )
+        logger.info(
+            f"  Liquidity pre-filter: {len(watchlist)} -> {len(scan_list)} "
+            f"names kept by average dollar volume (top {OPTIONS_PREFILTER_TOP_N})"
+        )
+
     # Step 3: Options Analysis (Stage 1 screen — yfinance chains)
     logger.info("Step 3/5: Scanning option chains and scoring premium opportunities...")
-    options_results = advisor.analyze_options(price_data, tickers=watchlist)
+    options_results = advisor.analyze_options(price_data, tickers=scan_list)
 
     # IV LEVEL SCREEN — per spec, only CONSIDER names with ATM IV > threshold.
     iv_pass = [r for r in options_results if r.get("iv_level_pass")]

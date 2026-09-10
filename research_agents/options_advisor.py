@@ -133,6 +133,45 @@ class OptionsAdvisor:
         """Return top N premium selling opportunities."""
         return results[:n]
 
+    @staticmethod
+    def prefilter_by_dollar_volume(
+        price_data: dict,
+        tickers: list[str],
+        top_n: int,
+        always_keep: list[str] = None,
+        window: int = 20,
+    ) -> list[str]:
+        """Rank `tickers` by recent average dollar volume and keep the top N.
+
+        Dollar volume (close × share volume, averaged over the last `window`
+        sessions) is a cheap proxy for option liquidity that we already have
+        from the downloaded price history, so it needs no extra fetches. Names
+        in `always_keep` (e.g. index ETFs) are retained regardless of rank.
+        Returns the reduced scan list; if `top_n` <= 0 the full list is kept.
+        """
+        always_keep = list(always_keep or [])
+        if not top_n or top_n <= 0:
+            return list(dict.fromkeys(tickers))
+
+        scores: dict[str, float] = {}
+        for t in tickers:
+            df = price_data.get(t)
+            if df is None or len(df) == 0:
+                continue
+            cols = {c.lower(): c for c in df.columns}
+            close_c = cols.get("close")
+            vol_c = cols.get("volume")
+            if not close_c or not vol_c:
+                continue
+            dv = (df[close_c] * df[vol_c]).tail(window).dropna()
+            if len(dv) == 0:
+                continue
+            scores[t] = float(dv.mean())
+
+        ranked = sorted(scores, key=scores.get, reverse=True)[:top_n]
+        keep = [t for t in always_keep if t in set(tickers)]
+        return list(dict.fromkeys(ranked + keep))
+
     # ------------------------------------------------------------------ #
     # Stage 2 — real-time confirmation + high-probability gate
     # ------------------------------------------------------------------ #
