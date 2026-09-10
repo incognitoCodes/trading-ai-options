@@ -645,6 +645,138 @@ QUICK_SCAN = list(dict.fromkeys(
 # NASDAQ-100 stocks not already in S&P 500 (high-growth names outside the S&P)
 NASDAQ_EX_SP500 = [t for t in NASDAQ_100_PLUS if t not in set(SP500)]
 
+# ---------------------------------------------------------------------------
+# Russell 1000 (approximate snapshot)
+# ---------------------------------------------------------------------------
+# The Russell 1000 is the ~1,000 largest US companies and reconstitutes every
+# June, so treat this as a maintained approximation rather than the exact live
+# index. It is built as the S&P 500, plus NASDAQ-100 names outside the S&P,
+# plus the curated large/mid-cap list below (mostly Russell 1000 members that
+# sit outside the S&P 500). Duplicates are removed by dict.fromkeys, so overlap
+# with the S&P 500 is harmless. To refresh, replace RUSSELL_1000_EXTRA with the
+# current iShares Russell 1000 (IWB) holdings minus the S&P 500.
+RUSSELL_1000_EXTRA = [
+    # Software / internet / fintech
+    "NET", "ZS", "MDB", "CFLT", "GTLB", "S", "ESTC", "TEAM",
+    "HUBS", "DOCU", "ZM", "TWLO", "OKTA", "DBX", "BILL", "PCTY",
+    "PAYC", "TYL", "PTC", "SSNC", "MANH", "DAY", "ASAN", "MNDY",
+    "FROG", "BRZE", "AI", "APP", "TTD", "ROKU", "PINS", "SNAP",
+    "SPOT", "RDDT", "DUOL", "TOST", "AFRM", "UPST", "SOFI", "NU",
+    "CART", "YELP", "WIX", "PATH", "FIVN", "RNG", "APPN", "PD",
+    "FSLY", "DOCN", "PSTG", "NTNX", "CVLT", "RPD", "TENB", "QLYS",
+    "VRNS", "AMPL", "FLYW", "PAYO", "EEFT", "WEX", "DLO", "GDOT",
+    # Semiconductors / equipment
+    "SEDG", "WOLF", "LSCC", "POWI", "SITM", "ALGM", "AMKR", "QRVO",
+    "SWKS", "FORM", "ACLS", "CRUS", "DIOD", "SLAB", "ONTO", "UCTT",
+    "RMBS", "MTSI", "SMTC", "CRDO", "AEIS", "PLAB", "CEVA", "INDI",
+    "NVTS", "VECO", "CAMT", "COHU",
+    # Biotech / pharma
+    "SRPT", "EXEL", "HALO", "NBIX", "ALNY", "IONS", "BMRN", "UTHR",
+    "RARE", "ARWR", "ACAD", "PTCT", "FOLD", "INSM", "KRYS", "CYTK",
+    "VKTX", "ROIV", "TGTX", "MDGL", "IMVT", "CPRX", "AXSM", "HRMY",
+    "TWST", "PACB", "NTLA", "BEAM", "VERV", "RXRX", "TEM", "HIMS",
+    "DOCS", "PGNY", "ITCI", "BPMC", "DVAX", "CRNX", "RVMD", "SMMT",
+    "ARDX", "AKRO", "PCVX", "MIRM", "AGIO", "APLS", "COGT", "KYMR",
+    "RCKT", "CRSP", "EDIT", "ALKS", "SUPN", "PBH", "AMPH", "CORT",
+    "LNTH", "ANIP", "COLL",
+    # Healthcare providers / devices
+    "THC", "UHS", "CYH", "EHC", "SGRY", "OPCH", "ACHC", "USPH",
+    "ENSG", "ADUS", "AMED", "CHE", "HQY", "PEN", "INSP", "GKOS",
+    "SHC", "NARI", "TNDM", "TMDX", "NEOG", "MEDP", "ICLR", "RGEN",
+    "BRKR", "QDEL", "NVCR", "AXNX", "ATEC", "CNMD", "IART", "MMSI",
+    "OSCR", "ALHC", "PRVA",
+    # Banks (regional) / financials
+    "ALLY", "CG", "ARES", "OWL", "STEP", "HLNE", "TPG", "JHG",
+    "IBKR", "VIRT", "TW", "SEIC", "VOYA", "CNO", "WAL", "PB",
+    "CFR", "SNV", "BOKF", "PNFP", "CBSH", "WBS", "VLY", "CADE",
+    "ONB", "UBSI", "FNB", "HWC", "FULT", "ASB", "WAFD", "GBCI",
+    "CATY", "HOMB", "TCBI", "WTFC", "FHB", "CVBF", "PPBI", "INDB",
+    "UMBF", "BANF", "FFIN", "SFBS", "AUB", "OZK", "COLB", "BKU",
+    "FIBK", "WSFS", "AX", "EBC",
+    # Insurance / asset managers
+    "RGA", "RNR", "KNSL", "RYAN", "ORI", "AFG", "MTG", "ESNT",
+    "RDN", "FNF", "FAF", "SIGI", "KMPR", "PLMR", "GSHD", "AGO",
+    "LMND", "AB", "APAM", "VCTR", "WT", "VRTS",
+    # Industrials / machinery / defense
+    "FIX", "PRIM", "MTZ", "EME", "IESC", "GVA", "TTEK", "EXPO",
+    "POWL", "NVT", "AYI", "ATKR", "AAON", "WCC", "AIT", "MSM",
+    "ITT", "CR", "FLS", "GGG", "GTLS", "ENOV", "MIDD", "WTS",
+    "RBC", "HLIO", "KMT", "TKR", "GTES", "HI", "HAYW", "JBT",
+    "CSWI", "SPXC", "EPAC", "BWXT", "AVAV", "KTOS", "MRCY", "CW",
+    "SAIC", "CACI", "AGCO", "CNH", "LNN", "ALG",
+    # Transport / logistics
+    "SAIA", "XPO", "ARCB", "KNX", "WERN", "SNDR", "HTLD", "MRTN",
+    "RXO", "GXO", "R", "MATX", "KEX", "CAR", "HUBG", "SKYW",
+    "ALGT", "JBLU", "ZIM", "STNG", "INSW", "FRO",
+    # Consumer discretionary / retail
+    "DECK", "ELF", "CROX", "BOOT", "ONON", "BIRK", "COLM", "YETI",
+    "LEVI", "ANF", "AEO", "URBN", "DDS", "M", "JWN", "DKS",
+    "FL", "FIVE", "OLLI", "BJ", "PSMT", "GO", "SFM", "CHWY",
+    "W", "FND", "VVV", "MNRO", "GPI", "PAG", "LAD", "ABG",
+    "CVNA", "SIG", "CWH", "FTDR", "PLNT",
+    # Restaurants
+    "WING", "CAVA", "SG", "BROS", "SHAK", "EAT", "BLMN", "CAKE",
+    "JACK", "WEN", "PZZA", "CBRL", "PTLO", "DNUT", "YUMC",
+    # Consumer staples
+    "SAM", "POST", "BRBR", "FRPT", "THS", "UTZ", "CALM", "LANC",
+    "JJSF", "FLO", "HAIN", "SMPL", "VITL", "CENT", "COTY", "IPAR",
+    "USNA", "HELE", "ENR", "EPC", "NUS", "BGS",
+    # Energy E&P / services / midstream
+    "AR", "RRC", "EXE", "MTDR", "PR", "CIVI", "SM", "MGY",
+    "CRGY", "CNX", "CRK", "NOG", "TALO", "VNOM", "DINO", "PARR",
+    "DK", "CVI", "VTLE", "CHX", "WHD", "LBRT", "PTEN", "HP",
+    "NBR", "RIG", "VAL", "TDW", "OII", "HLX", "FTI", "ET",
+    "EPD", "MPLX", "PAA", "PAGP", "WES", "DTM", "ENLC", "AM",
+    "SUN", "ARLP", "BTU", "AMR", "HCC", "CEIX", "UEC", "UUUU",
+    # Utilities
+    "OGE", "IDA", "POR", "ALE", "BKH", "NWE", "AVA", "OTTR",
+    "MGEE", "NJR", "SWX", "SR", "SJW", "AWR", "CWT", "MSEX",
+    "UGI", "NFG", "NWN", "CWEN",
+    # Materials / metals / chemicals
+    "CMC", "CLF", "ATI", "CRS", "WOR", "MLI", "SCHN", "MP",
+    "CBT", "KWR", "IOSP", "SXT", "FUL", "HUN", "OLN", "ASH",
+    "CC", "TROX", "KRO", "ALTM", "SCCO", "HL", "CDE", "PAAS",
+    "AG", "SSRM", "BTG", "EGO", "EXP", "USLM", "SLGN", "GEF",
+    "ATR", "OI", "GPK", "MATV",
+    # Building products / homebuilders
+    "BLD", "IBP", "AZEK", "JELD", "AWI", "NX", "GFF", "AMWD",
+    "PATK", "ROCK", "CVCO", "SKY", "LGIH", "TMHC", "MTH", "TPH",
+    "CCS", "GRBK", "DFH", "KBH",
+    # Autos / parts
+    "RIVN", "LCID", "GT", "ADNT", "DAN", "VC", "MOD", "DORM",
+    "SMP", "THRM", "GNTX", "ALSN", "LCII", "WGO", "THO", "REVG",
+    "HOG", "BC", "FOXF",
+    # Media / telecom / communications
+    "NYT", "LBRDK", "LBRDA", "FWONK", "FWONA", "LSXMK", "EDR", "CNK",
+    "IMAX", "FUBO", "NXST", "TGNA", "SSP", "WMG", "TKO", "MSGS",
+    "MSGE", "LUMN", "TDS", "ATUS", "CABO", "CCOI", "SHEN", "IRDM",
+    "VSAT", "SATS", "GSAT", "ASTS", "COMM", "LITE", "CALX", "EXTR",
+    # Travel / leisure / gaming
+    "EXPE", "TRIP", "WH", "CHH", "TNL", "HGV", "VAC", "PLYA",
+    "OSW", "BYD", "RRR", "BALY", "PENN", "GDEN", "MCRI", "FLUT",
+    "DKNG", "RSI", "LNW", "MODG", "GOLF", "XPOF",
+    # Agriculture / food producers
+    "INGR", "DAR", "ANDE", "PPC", "DOLE", "CVGW", "LMNR", "SEB",
+    "IPI", "SMG", "UAN", "AVD",
+    # Business / IT services
+    "KFY", "HSII", "ASGN", "KELYA", "TNET", "NSP", "BBSI", "CBZ",
+    "EXLS", "WNS", "G", "ICFI", "HURN", "FCN", "CRAI",
+    # REITs (outside the S&P 500)
+    "STAG", "TRNO", "FR", "COLD", "LINE", "NSA", "EPRT", "ADC",
+    "BNL", "FCPT", "PECO", "ROIC", "KRG", "AKR", "IVT", "SKT",
+    "HIW", "DEI", "CUZ", "BDN", "CDP", "ESRT", "PGRE", "HPP",
+    "AAT", "IRT", "NXRT", "APLE", "RLJ", "DRH", "SHO", "XHR",
+    "PEB", "INN", "LTC", "SBRA", "CTRE", "NHI", "MPW", "GMRE",
+    "DHC", "PCH", "RYN", "OUT", "EPR", "SVC", "HR", "CTO",
+    "GNL", "NTST", "PLYM", "SAFE", "GOOD", "LAND", "FPI", "HASI",
+    # Hardware / networking / electronics
+    "CIEN", "NTCT", "PLXS", "BHE", "SANM", "CLS", "OSIS", "MKSI",
+    "ADTN", "KN", "BDC", "VNT", "NOVT", "ITRI", "BMI",
+]
+
+# Russell 1000 = S&P 500 ∪ NASDAQ-100 (outside S&P) ∪ curated extras above.
+RUSSELL_1000 = list(dict.fromkeys(SP500 + NASDAQ_EX_SP500 + RUSSELL_1000_EXTRA))
+
 # Default watchlist = S&P 500 ∪ NASDAQ-100 + ALL ETFs (full universe)
 DEFAULT_WATCHLIST = list(dict.fromkeys(SP500 + NASDAQ_EX_SP500 + ALL_ETFS))
 

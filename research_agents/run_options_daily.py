@@ -47,6 +47,7 @@ from research_agents.config import (
     OPTIONS_USE_MOOMOO_REALTIME,
     OPTIONS_MIN_IV_LEVEL,
     OPTIONS_WEEKLY_TARGET,
+    OPTIONS_MAX_RECOMMENDATIONS,
 )
 from research_agents.watchlist import QUICK_SCAN
 
@@ -150,7 +151,7 @@ def run(
     elif not options_results:
         logger.info("Step 3a: No names cleared the IV screen today — skipping real-time confirm.")
 
-    top_opps = advisor.get_top_opportunities(options_results, n=20)
+    top_opps = advisor.get_top_opportunities(options_results, n=OPTIONS_MAX_RECOMMENDATIONS)
     if top_opps:
         logger.info(
             f"  Top opportunity: {top_opps[0]['ticker']} "
@@ -166,6 +167,7 @@ def run(
         target=OPTIONS_WEEKLY_TARGET,
         max_contracts=30,
         max_per_ticker=5,
+        max_trades=OPTIONS_MAX_RECOMMENDATIONS,
     )
     logger.info(
         f"  Portfolio: {portfolio['total_contracts']} contracts, "
@@ -338,7 +340,7 @@ def run(
     print("-" * 80)
 
     if top_opps:
-        for opp in top_opps[:12]:
+        for opp in top_opps[:OPTIONS_MAX_RECOMMENDATIONS]:
             iv_str = f"{opp['atm_iv']*100:.1f}%" if opp.get("atm_iv") else "N/A"
             hv_str = f"{opp['hv_20']*100:.1f}%" if opp.get("hv_20") else "N/A"
             prem = opp.get("iv_premium")

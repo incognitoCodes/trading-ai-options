@@ -125,6 +125,18 @@ OPTIONS_MAX_BID_ASK_PCT = float(os.environ.get("OPTIONS_MAX_BID_ASK_PCT", "0.18"
 # + Part 2 target fillers combine toward this).
 OPTIONS_WEEKLY_TARGET = float(os.environ.get("OPTIONS_WEEKLY_TARGET", "4000"))
 
+# Which stock universe the options advisory scans:
+#   "russell1000" (default, ~1,000 names), "sp500" (~500), or "blue_chips"
+#   (~115 mega/large caps). A bigger universe surfaces more candidates but
+#   takes proportionally longer to scan and is more likely to hit data-source
+#   rate limits.
+OPTIONS_UNIVERSE_NAME = os.environ.get("OPTIONS_UNIVERSE_NAME", "russell1000").lower()
+
+# Cap on how many trade ideas the advisory surfaces. Both the weekly portfolio
+# (actionable recommendations) and the top-opportunities list are limited to
+# this many, best first.
+OPTIONS_MAX_RECOMMENDATIONS = int(os.environ.get("OPTIONS_MAX_RECOMMENDATIONS", "10"))
+
 # Pull ACTUAL premium from MooMoo OpenD real-time data (two-stage: yfinance
 # screens the universe, MooMoo confirms the shortlist at US market open).
 # Set to "0" to disable and fall back to yfinance premiums (clearly labeled).

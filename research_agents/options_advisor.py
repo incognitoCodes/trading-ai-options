@@ -42,19 +42,29 @@ from research_agents.config import (
     OPTIONS_MIN_POP,
     OPTIONS_MAX_BID_ASK_PCT,
     OPTIONS_USE_MOOMOO_REALTIME,
+    OPTIONS_UNIVERSE_NAME,
     HV_WINDOW_SHORT,
     HV_WINDOW_STANDARD,
     HV_WINDOW_LONG,
 )
 from research_agents.dip_hunter import TOP_100_BLUE_CHIPS
+from research_agents.watchlist import SP500, RUSSELL_1000
 
 logger = logging.getLogger(__name__)
 
 # Indices with highly liquid options markets
 OPTIONS_INDICES = ["SPY", "QQQ", "IWM", "DIA"]
 
-# Combined universe
-OPTIONS_UNIVERSE = list(dict.fromkeys(TOP_100_BLUE_CHIPS + OPTIONS_INDICES))
+# Stock universe the advisory scans, selected by OPTIONS_UNIVERSE_NAME.
+_UNIVERSE_BY_NAME = {
+    "blue_chips": TOP_100_BLUE_CHIPS,
+    "sp500": SP500,
+    "russell1000": RUSSELL_1000,
+}
+_universe_base = _UNIVERSE_BY_NAME.get(OPTIONS_UNIVERSE_NAME, RUSSELL_1000)
+
+# Combined universe (stocks + liquid index ETFs)
+OPTIONS_UNIVERSE = list(dict.fromkeys(_universe_base + OPTIONS_INDICES))
 
 
 def _avg_earnings_move(price_df: Optional[pd.DataFrame]) -> Optional[float]:
@@ -329,6 +339,7 @@ class OptionsAdvisor:
         target_premium: float = 5000.0,
         max_contracts: int = 30,
         max_per_ticker: int = 10,
+        max_trades: int = 10,
     ) -> dict:
         """Build a curated weekly trade portfolio targeting $5K+ premium.
 
@@ -513,7 +524,11 @@ class OptionsAdvisor:
 
         MAX_ITERS = len(candidates) * 2  # safety
         iters = 0
-        while total_contracts < max_contracts and iters < MAX_ITERS:
+        while (
+            total_contracts < max_contracts
+            and len(portfolio) < max_trades
+            and iters < MAX_ITERS
+        ):
             iters += 1
             # Don't overshoot target by more than 60%
             if total_premium >= target_premium * 1.6 and len(portfolio) >= 5:
@@ -646,6 +661,7 @@ class OptionsAdvisor:
         max_contracts: int = 30,
         max_per_ticker: int = 5,
         fill_min_pop: float = None,
+        max_trades: int = 10,
     ) -> dict:
         """Build a two-part weekly portfolio toward `target` (default $4K).
 
@@ -667,9 +683,15 @@ class OptionsAdvisor:
         core = self.build_weekly_portfolio(
             results, target_premium=target,
             max_contracts=max_contracts, max_per_ticker=max_per_ticker,
+            max_trades=max_trades,
         )
         for t in core["trades"]:
             t["part"] = "core"
+
+        # Combined core + fill trade count is capped at max_trades. Core is
+        # high-conviction, so it fills these slots first; fillers only top up
+        # whatever slots remain.
+        trades_left = max(0, max_trades - len(core["trades"]))
 
         used_keys = {
             (t["ticker"], t["strategy"], t.get("expiry"), t.get("action"))
@@ -743,7 +765,7 @@ class OptionsAdvisor:
         fill_max_loss = 0.0
 
         for c in fills:
-            if remaining <= 0 or contracts_left <= 0:
+            if remaining <= 0 or contracts_left <= 0 or len(fill_trades) >= trades_left:
                 break
             tk = c["ticker"]
             tused = used_tickers.get(tk, 0)
