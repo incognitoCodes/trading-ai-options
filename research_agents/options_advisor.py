@@ -178,6 +178,25 @@ class OptionsAdvisor:
         keep = [t for t in always_keep if t in set(tickers)]
         return list(dict.fromkeys(ranked + keep))
 
+    @staticmethod
+    def enrich_sentiment(results: list[dict], tickers) -> list[dict]:
+        """Attach recent-news tone to the given tickers and blend trader_bias.
+
+        News is one network call per ticker, so only the recommended shortlist
+        is enriched. Options positioning and hold quality are already on each
+        result from _analyze_single.
+        """
+        from research_agents import sentiment as _sent
+        want = set(tickers or [])
+        for r in results:
+            if r.get("ticker") not in want:
+                continue
+            ns = _sent.news_sentiment(r["ticker"])
+            r["news_sentiment"] = ns
+            pos_label = (r.get("options_positioning") or {}).get("label", "Neutral")
+            r["trader_bias"] = _sent.combined_bias(ns.get("label", "Neutral"), pos_label)
+        return results
+
     # ------------------------------------------------------------------ #
     # Stage 2 — real-time confirmation + high-probability gate
     # ------------------------------------------------------------------ #
@@ -499,6 +518,7 @@ class OptionsAdvisor:
                     "score": r["premium_score"],
                     "atm_iv": r.get("atm_iv"),
                     "iv_premium": r.get("iv_premium"),
+                    "hold_quality": (r.get("hold_quality") or {}).get("score") or 50,
                 })
 
         if not candidates:
@@ -528,7 +548,9 @@ class OptionsAdvisor:
             risk_label[s] = "conservative"
 
         def _sort_key(x):
-            return (x["rr_ratio"], x["score"])
+            # Reward/risk first, then hold-quality (a name you'd be glad to own
+            # if assigned floats up), then premium score.
+            return (x["rr_ratio"], x.get("hold_quality", 50), x["score"])
 
         buckets: dict[str, list] = {
             "aggressive": sorted(
@@ -1354,6 +1376,14 @@ class OptionsAdvisor:
         from research_agents.macro_calendar import sector_catalyst_note
         sector_note = sector_catalyst_note(sector, industry)
 
+        # Trader-sentiment signals (cheap — from data already in hand). News
+        # tone is added later, only for the recommended shortlist.
+        from research_agents import sentiment as _sent
+        options_positioning = _sent.options_positioning(
+            primary["calls"], primary["puts"], current_price,
+        )
+        hold = _sent.hold_quality(price_df)
+
         return {
             "ticker": ticker,
             "name": name,
@@ -1362,6 +1392,16 @@ class OptionsAdvisor:
             "sector_note": sector_note,
             "current_price": round(current_price, 2),
             "premium_score": score,
+            # Trader sentiment
+            "options_positioning": options_positioning,
+            "hold_quality": hold,
+            "news_sentiment": None,   # filled in for recommended names only
+            "trader_bias": options_positioning.get("label", "Neutral"),
+            # Volatility
+            "iv_level_pass": iv_level_pass,
+            "atm_iv": round(atm_iv, 4),
+            "hv_20": round(hv_20, 4) if hv_20 else None,
+            "hv_10": round(hv_10, 4) if hv_10 else None,
             # Volatility
             "iv_level_pass": iv_level_pass,
             "atm_iv": round(atm_iv, 4),

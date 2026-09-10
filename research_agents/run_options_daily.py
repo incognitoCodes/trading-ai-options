@@ -233,6 +233,35 @@ def run(
         f"Part 2 (fillers) ${portfolio['fill_premium']:,.0f}"
     )
 
+    # Step 3b.1: Trader sentiment — news tone for the recommended shortlist,
+    # blended with options positioning and hold quality already on each result.
+    # Annotation and ranking only; nothing is blocked.
+    rec_tickers = {t["ticker"] for t in portfolio.get("trades", [])}
+    rec_tickers |= {o["ticker"] for o in top_opps}
+    if rec_tickers:
+        logger.info(
+            f"Step 3b.1: Reading news + positioning for "
+            f"{len(rec_tickers)} recommended name(s)..."
+        )
+        advisor.enrich_sentiment(options_results, rec_tickers)
+        by_ticker = {r["ticker"]: r for r in options_results}
+        for t in portfolio.get("trades", []):
+            r = by_ticker.get(t["ticker"])
+            if not r:
+                continue
+            hq = r.get("hold_quality") or {}
+            ns = r.get("news_sentiment") or {}
+            t["trader_bias"] = r.get("trader_bias")
+            t["hold_quality_label"] = hq.get("label")
+            t["news_label"] = ns.get("label")
+            tag = f"Bias {r.get('trader_bias', '?')}"
+            if t["strategy"] == "CASH_SECURED_PUT" and hq.get("label"):
+                tag += f", Hold {hq['label']}"
+                # Expert caution: selling puts into weak tone/quality.
+                if hq.get("label") == "Weak" or ns.get("label") == "Bearish":
+                    tag += " ⚠"
+            t["remark"] = f"{t.get('remark', '')} · {tag}".strip(" ·")
+
     # Step 3d: Pull OPEN option positions and generate defensive advice
     positions = None
     if OPTIONS_USE_MOOMOO_REALTIME:
@@ -410,6 +439,22 @@ def run(
                 f"IV: {iv_str}  HV: {hv_str}  "
                 f"{prem_str}  {pctile_str}"
             )
+            # Trader read: news tone + options positioning + hold quality
+            pos = opp.get("options_positioning") or {}
+            hq = opp.get("hold_quality") or {}
+            ns = opp.get("news_sentiment") or {}
+            read_bits = [f"Bias: {opp.get('trader_bias') or pos.get('label', 'Neutral')}"]
+            if pos.get("note"):
+                read_bits.append(f"Options {pos.get('label','')} ({pos['note']})")
+            if hq.get("label"):
+                read_bits.append(f"Hold {hq['label']}")
+            if ns.get("label") and ns.get("n"):
+                read_bits.append(f"News {ns['label']} ({ns['n']})")
+            print(f"    🧭 {' | '.join(read_bits)}")
+            if ns.get("headlines"):
+                h0 = ns["headlines"][0]
+                print(f"    📰 {h0['title'][:90]}")
+
             # Price ranges + daily movement
             pr = opp.get("price_ranges") or {}
             rng_parts = []

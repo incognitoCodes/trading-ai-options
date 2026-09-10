@@ -738,6 +738,39 @@ class OptionsReportGenerator:
               </div>
               <div class="ocard-metrics">{metrics}</div>"""
 
+            # Trader read: news tone + options positioning + hold quality
+            pos = opp.get("options_positioning") or {}
+            hq = opp.get("hold_quality") or {}
+            ns = opp.get("news_sentiment") or {}
+            bias = opp.get("trader_bias") or pos.get("label") or "Neutral"
+            bias_color = {
+                "Bullish": "#2e7d32", "Lean Bullish": "#558b2f",
+                "Neutral": "#757575", "Lean Bearish": "#ef6c00",
+                "Bearish": "#c62828",
+            }.get(bias, "#757575")
+            read_parts = [
+                f'<strong style="color:{bias_color};">Trader bias: {bias}</strong>'
+            ]
+            if pos.get("note"):
+                read_parts.append(f'Options: {pos.get("label", "")} ({pos["note"]})')
+            if hq.get("label"):
+                sc = f' ({hq["score"]})' if hq.get("score") is not None else ""
+                read_parts.append(f'Hold quality: {hq["label"]}{sc}')
+            if ns.get("label") and ns.get("n"):
+                read_parts.append(f'News: {ns["label"]} ({ns.get("n", 0)} headlines)')
+            html += (
+                '<div style="font-size:11.5px; color:#333; margin:4px 0;">&#x1F9ED; '
+                + " | ".join(read_parts) + "</div>"
+            )
+            heads = ns.get("headlines") or []
+            if heads:
+                html += '<div style="font-size:10.5px; color:#777; margin:2px 0 4px;">'
+                for h in heads[:2]:
+                    title = str(h.get("title", "")).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                    age = f' ({h["age_days"]:.0f}d ago)' if h.get("age_days") is not None else ""
+                    html += f'&#x1F4F0; {title}{age}<br>'
+                html += "</div>"
+
             # Sector / segment catalyst context
             if opp.get("sector_note"):
                 sector_lbl = opp.get("sector") or "Sector"
