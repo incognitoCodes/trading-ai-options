@@ -41,6 +41,8 @@ from research_agents.config import (
     OPTIONS_MIN_IV_LEVEL,
     OPTIONS_MIN_POP,
     OPTIONS_COVERED_CALL_MIN_POP,
+    OPTIONS_PUT_REQUIRE_DIP,
+    OPTIONS_PUT_DIP_PCT,
     OPTIONS_MAX_BID_ASK_PCT,
     OPTIONS_USE_MOOMOO_REALTIME,
     OPTIONS_UNIVERSE_NAME,
@@ -58,6 +60,9 @@ logger = logging.getLogger(__name__)
 
 # Indices with highly liquid options markets
 OPTIONS_INDICES = ["SPY", "QQQ", "IWM", "DIA"]
+
+# Directional put-selling strategies subject to the "sell only into a dip" rule.
+PUT_SELLING_STRATEGIES = {"CASH_SECURED_PUT", "CREDIT_PUT_SPREAD"}
 
 # Liquid, option-active ETFs always included in the scan: broad market, sector,
 # thematic, and leveraged (e.g. SOXL, TQQQ, SMH, GLD). Forex ETFs are excluded
@@ -394,6 +399,17 @@ class OptionsAdvisor:
             reasons.append(
                 f"POP {pop:.0f}% < required {min_pop:.0f}%"
                 + (" (raised for macro event)" if macro_hi else "")
+            )
+
+        # Sell puts only into a recent dip on a name unlikely to keep falling.
+        if (
+            OPTIONS_PUT_REQUIRE_DIP
+            and trade.get("strategy") in PUT_SELLING_STRATEGIES
+            and not trade.get("put_dip_ok")
+        ):
+            note = trade.get("put_setup_note")
+            reasons.append(
+                "not a dip setup" + (f" ({note})" if note else "")
             )
 
         # Liquidity
@@ -1359,6 +1375,15 @@ class OptionsAdvisor:
 
             trade["pop"] = round(pop * 100, 1) if pop is not None else None
 
+        # 13b. Sell-put-into-a-dip filter: mark whether the name recently dropped
+        # (rich premium) while staying in an uptrend (low further-drop risk).
+        from research_agents import sentiment as _sent_ps
+        put_setup = _sent_ps.put_selling_setup(price_df, OPTIONS_PUT_DIP_PCT)
+        for trade in trades + weekly_trades:
+            if trade.get("strategy") in PUT_SELLING_STRATEGIES:
+                trade["put_dip_ok"] = put_setup["ok"]
+                trade["put_setup_note"] = put_setup["reason"]
+
         # Get company name + sector (for segment/sector event context)
         name = ticker
         sector = None
@@ -1393,6 +1418,7 @@ class OptionsAdvisor:
             # Trader sentiment
             "options_positioning": options_positioning,
             "hold_quality": hold,
+            "put_setup": put_setup,
             "news_sentiment": None,   # filled in for recommended names only
             "trader_bias": options_positioning.get("label", "Neutral"),
             # Volatility

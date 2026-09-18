@@ -322,6 +322,65 @@ def hold_quality(price_df) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# Sell-put-into-a-dip setup
+# --------------------------------------------------------------------------- #
+def put_selling_setup(price_df, dip_pct: float = 3.0) -> dict:
+    """Is this a good 'sell puts into a dip' setup?
+
+    Two things a disciplined put seller wants: the stock has recently dropped
+    (so premium is rich) AND the risk of a further slide is low (the pullback
+    is inside an uptrend, not a breakdown or a falling knife).
+
+    ok = dropped AND risk_low. Returns the metrics and a short reason.
+    """
+    out = {"ok": False, "dropped": False, "risk_low": False,
+           "ret_5d_pct": None, "off_high_pct": None, "reason": "insufficient data"}
+    try:
+        if price_df is None or len(price_df) < 30:
+            return out
+        close_c = _col(price_df, "close")
+        if not close_c:
+            return out
+        close = price_df[close_c].astype(float)
+        last = float(close.iloc[-1])
+        if last <= 0:
+            return out
+
+        ret_5d = last / float(close.iloc[-6]) - 1 if len(close) >= 6 else 0.0
+        ret_1m = last / float(close.iloc[-21]) - 1 if len(close) >= 21 else 0.0
+        high_20 = float(close.tail(20).max())
+        off_high = last / high_20 - 1 if high_20 > 0 else 0.0
+        sma200 = float(close.tail(min(200, len(close))).mean())
+        rsi = _rsi(close)
+
+        dropped = (ret_5d * 100 <= -dip_pct) or (off_high * 100 <= -dip_pct)
+        uptrend = last > sma200
+        not_crashing = (ret_1m > -0.25) and (rsi is None or rsi >= 20)
+        risk_low = uptrend and not_crashing
+
+        reasons = []
+        if not dropped:
+            reasons.append(
+                f"no recent dip (5d {ret_5d*100:+.1f}%, {off_high*100:+.1f}% off 20d high)"
+            )
+        if not uptrend:
+            reasons.append("below 200-day (further-drop risk)")
+        if uptrend and not not_crashing:
+            reasons.append("steep recent slide (falling-knife risk)")
+
+        ok = bool(dropped and risk_low)
+        out.update(
+            ok=ok, dropped=bool(dropped), risk_low=bool(risk_low),
+            ret_5d_pct=round(ret_5d * 100, 1),
+            off_high_pct=round(off_high * 100, 1),
+            reason="dip within an uptrend" if ok else "; ".join(reasons),
+        )
+    except Exception as e:
+        logger.debug(f"put_selling_setup failed: {e}")
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # Combined read
 # --------------------------------------------------------------------------- #
 def combined_bias(news_label: str, positioning_label: str) -> str:

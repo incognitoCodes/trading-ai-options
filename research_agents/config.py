@@ -127,6 +127,14 @@ OPTIONS_COVERED_CALL_MIN_POP = float(
     os.environ.get("OPTIONS_COVERED_CALL_MIN_POP", "85.0")
 )
 
+# Sell puts only into a recent dip, so the premium is rich and the risk of a
+# further slide is low (a pullback inside an uptrend, not a breakdown). A trade
+# qualifies when the stock has dropped at least OPTIONS_PUT_DIP_PCT over the
+# last week or from its 20-day high AND is still above its 200-day average.
+# Set OPTIONS_PUT_REQUIRE_DIP=0 to allow put-selling in any regime.
+OPTIONS_PUT_REQUIRE_DIP = os.environ.get("OPTIONS_PUT_REQUIRE_DIP", "1") != "0"
+OPTIONS_PUT_DIP_PCT = float(os.environ.get("OPTIONS_PUT_DIP_PCT", "3.0"))
+
 # Worst-leg bid/ask spread (as % of mid) allowed for a trade to count as
 # liquid enough to recommend. Wider = the fill you actually get is uncertain.
 OPTIONS_MAX_BID_ASK_PCT = float(os.environ.get("OPTIONS_MAX_BID_ASK_PCT", "0.18"))
