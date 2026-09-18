@@ -38,7 +38,7 @@ if os.path.exists(_env_file):
 
 from research_agents.data_collector import DataCollector
 from research_agents.options_advisor import (
-    OptionsAdvisor, OPTIONS_UNIVERSE, OPTIONS_INDICES,
+    OptionsAdvisor, OPTIONS_UNIVERSE, OPTIONS_ETFS,
 )
 from research_agents.options_report import OptionsReportGenerator
 from research_agents.email_sender import EmailSender
@@ -138,7 +138,7 @@ def run(
     if OPTIONS_PREFILTER_TOP_N and 0 < OPTIONS_PREFILTER_TOP_N < len(watchlist):
         scan_list = advisor.prefilter_by_dollar_volume(
             price_data, watchlist, OPTIONS_PREFILTER_TOP_N,
-            always_keep=OPTIONS_INDICES + list(holdings.keys()),
+            always_keep=OPTIONS_ETFS + list(holdings.keys()),
         )
         logger.info(
             f"  Liquidity pre-filter: {len(watchlist)} -> {len(scan_list)} "

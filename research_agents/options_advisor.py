@@ -48,12 +48,23 @@ from research_agents.config import (
     HV_WINDOW_LONG,
 )
 from research_agents.dip_hunter import TOP_100_BLUE_CHIPS
-from research_agents.watchlist import SP500, RUSSELL_1000
+from research_agents.watchlist import (
+    SP500, RUSSELL_1000,
+    BROAD_ETFS, SECTOR_ETFS, THEMATIC_ETFS, LEVERAGED_ETFS,
+)
 
 logger = logging.getLogger(__name__)
 
 # Indices with highly liquid options markets
 OPTIONS_INDICES = ["SPY", "QQQ", "IWM", "DIA"]
+
+# Liquid, option-active ETFs always included in the scan: broad market, sector,
+# thematic, and leveraged (e.g. SOXL, TQQQ, SMH, GLD). Forex ETFs are excluded
+# as their options are thin. The trade-level liquidity gate still filters any
+# individual ETF whose chain is too illiquid on the day.
+OPTIONS_ETFS = list(dict.fromkeys(
+    OPTIONS_INDICES + BROAD_ETFS + SECTOR_ETFS + THEMATIC_ETFS + LEVERAGED_ETFS
+))
 
 # Stock universe the advisory scans, selected by OPTIONS_UNIVERSE_NAME.
 _UNIVERSE_BY_NAME = {
@@ -63,8 +74,8 @@ _UNIVERSE_BY_NAME = {
 }
 _universe_base = _UNIVERSE_BY_NAME.get(OPTIONS_UNIVERSE_NAME, RUSSELL_1000)
 
-# Combined universe (stocks + liquid index ETFs)
-OPTIONS_UNIVERSE = list(dict.fromkeys(_universe_base + OPTIONS_INDICES))
+# Combined universe (stocks + liquid ETFs)
+OPTIONS_UNIVERSE = list(dict.fromkeys(_universe_base + OPTIONS_ETFS))
 
 
 def _avg_earnings_move(price_df: Optional[pd.DataFrame]) -> Optional[float]:
