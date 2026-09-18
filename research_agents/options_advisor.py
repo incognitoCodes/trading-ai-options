@@ -361,7 +361,6 @@ class OptionsAdvisor:
 
         A trade must clear ALL of:
           • real-premium POP ≥ OPTIONS_MIN_POP (default 50%)
-          • IV richness: ATM IV > 20-day HV (options actually overpriced)
           • liquidity: worst-leg OI ≥ min, bid/ask spread ≤ max
           • no binary (earnings) event on/before expiry
         A HIGH-impact macro event before expiry does not disqualify but is
@@ -369,7 +368,6 @@ class OptionsAdvisor:
         """
         reasons: list[str] = []
         dte = trade.get("dte", 30)
-        is_covered_call = trade.get("strategy") == "COVERED_CALL"
 
         # Only real-premium confirmed trades can be "high probability"
         if not trade.get("confirmed"):
@@ -384,18 +382,6 @@ class OptionsAdvisor:
             reasons.append(
                 f"POP {pop:.0f}% < required {min_pop:.0f}%"
                 + (" (raised for macro event)" if macro_hi else "")
-            )
-
-        # IV richness — required for pure premium selling, but NOT for covered
-        # calls, which are income on shares you already own in any IV regime.
-        if (
-            not is_covered_call
-            and real_atm_iv is not None and hv_20 is not None
-            and real_atm_iv <= hv_20
-        ):
-            reasons.append(
-                f"IV {real_atm_iv*100:.0f}% not above HV {hv_20*100:.0f}% "
-                f"(premium not overpriced)"
             )
 
         # Liquidity
@@ -485,7 +471,7 @@ class OptionsAdvisor:
                 if max_loss <= 0 or max_profit <= 0:
                     continue
                 # These trades already cleared the high-probability gate
-                # (POP ≥ 50%, IV>HV, liquid, no binary event). High-POP credit
+                # (POP ≥ 50%, liquid, no binary event). High-POP credit
                 # spreads inherently risk more than they collect (a 30-delta
                 # put spread is ~1:4), so we DON'T impose the old 2× R/R cap
                 # here — that would reject exactly the trades the gate surfaces.
@@ -830,7 +816,7 @@ class OptionsAdvisor:
         """Build a two-part weekly portfolio toward `target` (default $4K).
 
         Part 1 — CORE: only trades that cleared the full high-probability gate
-                 (POP ≥ 50%, IV>HV, liquid, no binary event). Real-premium.
+                 (POP ≥ 50%, liquid, no binary event). Real-premium.
         Part 2 — FILL: if the core falls short of the target, top it up with
                  confirmed real-premium trades that JUST missed the gate
                  (fill_min_pop ≤ POP < OPTIONS_MIN_POP, still liquid, no

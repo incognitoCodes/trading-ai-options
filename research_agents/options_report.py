@@ -258,8 +258,8 @@ class OptionsReportGenerator:
     <strong>2. Real-time premium &mdash;</strong> the actual bid/ask of every leg
     is pulled from MooMoo at the US open to compute the true net credit.<br>
     <strong>3. High-probability gate &mdash;</strong> a trade is only recommended
-    if its POP (on the real premium) is <strong>&ge; {OPTIONS_MIN_POP:.0f}%</strong>, IV exceeds
-    realized vol, the chain is liquid, and no earnings land before expiry.<br>
+    if its POP (on the real premium) is <strong>&ge; {OPTIONS_MIN_POP:.0f}%</strong>,
+    the chain is liquid, and no earnings land before expiry.<br>
     <strong>4. Event overlay &mdash;</strong> upcoming company, sector, and US
     macro catalysts (FOMC/CPI/jobs) are checked against each expiry.
   </div>
@@ -276,7 +276,7 @@ class OptionsReportGenerator:
   <div style="font-size:13px; color:#555; line-height:1.7;">
     Nothing cleared the full screen today: <strong>ATM IV &gt; {iv_min_level*100:.0f}%</strong>
     &rarr; real-time premium confirmation &rarr; <strong>POP &ge; {OPTIONS_MIN_POP:.0f}%</strong> with
-    IV&gt;HV, liquid strikes, and no binary event before expiry.
+    liquid strikes and no binary event before expiry.
     {f'{n} candidate trade(s) were evaluated but none passed the probability gate.' if n else 'No names passed the IV level screen.'}
     <br><br>
     This is by design &mdash; the advisory only recommends when the odds are
@@ -601,7 +601,7 @@ class OptionsReportGenerator:
             html += f"""
   <div style="font-size:13px; font-weight:700; color:#1b5e20; margin:6px 0 2px;">
     Part 1 &mdash; High-Conviction &nbsp;<span style="font-weight:400; color:#555; font-size:11px;">
-    (POP&nbsp;&ge;&nbsp;{OPTIONS_MIN_POP:.0f}%, real-time confirmed, IV&gt;HV, no binary event)</span>
+    (POP&nbsp;&ge;&nbsp;{OPTIONS_MIN_POP:.0f}%, real-time confirmed, no binary event)</span>
   </div>
   {self._PTABLE_HEADER}{rows}
     <tr class="portfolio-total">
@@ -638,7 +638,7 @@ class OptionsReportGenerator:
 
   <div style="margin-top:10px; font-size:11px; color:#555; border-top:1px solid #a5d6a7; padding-top:8px;">
     &#x2705; <strong>Part 1</strong> trades cleared the full high-probability gate
-    (POP&nbsp;&ge;&nbsp;{OPTIONS_MIN_POP:.0f}% on <strong>MooMoo real-time premium</strong>, IV&gt;HV,
+    (POP&nbsp;&ge;&nbsp;{OPTIONS_MIN_POP:.0f}% on <strong>MooMoo real-time premium</strong>,
     liquid strikes, no binary event before expiry).
     &#x2691; <strong>Part 2</strong> trades are real-time-priced near-misses
     (POP&nbsp;{fill_min_pop:.0f}&ndash;{OPTIONS_MIN_POP:.0f}%) added only to reach the ${target:,.0f}

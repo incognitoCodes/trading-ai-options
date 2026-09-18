@@ -113,8 +113,8 @@ HV_WINDOW_LONG = 60               # 60-day realized vol
 OPTIONS_MIN_IV_LEVEL = float(os.environ.get("OPTIONS_MIN_IV_LEVEL", "0.60"))
 
 # A trade is only RECOMMENDED if its probability of profit (computed on the
-# real MooMoo premium) clears this bar, plus IV>HV richness, liquidity, and
-# no binary (earnings) event before expiry. Probability gate.
+# real MooMoo premium) clears this bar, plus liquidity and no binary
+# (earnings) event before expiry. Probability gate.
 OPTIONS_MIN_POP = float(os.environ.get("OPTIONS_MIN_POP", "50.0"))
 
 # Worst-leg bid/ask spread (as % of mid) allowed for a trade to count as
