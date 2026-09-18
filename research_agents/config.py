@@ -117,6 +117,16 @@ OPTIONS_MIN_IV_LEVEL = float(os.environ.get("OPTIONS_MIN_IV_LEVEL", "0.60"))
 # (earnings) event before expiry. Probability gate.
 OPTIONS_MIN_POP = float(os.environ.get("OPTIONS_MIN_POP", "50.0"))
 
+# Covered calls are income on shares you already hold, and the intent is to
+# KEEP the shares. This is the minimum probability (as a percent) that the
+# written call expires out of the money, i.e. you are NOT called away. The
+# strike is chosen to meet this bar, trading some premium for a low chance of
+# assignment. Higher = safer but less premium (e.g. 90); lower = more premium
+# but more chance of being called (e.g. 75).
+OPTIONS_COVERED_CALL_MIN_POP = float(
+    os.environ.get("OPTIONS_COVERED_CALL_MIN_POP", "85.0")
+)
+
 # Worst-leg bid/ask spread (as % of mid) allowed for a trade to count as
 # liquid enough to recommend. Wider = the fill you actually get is uncertain.
 OPTIONS_MAX_BID_ASK_PCT = float(os.environ.get("OPTIONS_MAX_BID_ASK_PCT", "0.18"))

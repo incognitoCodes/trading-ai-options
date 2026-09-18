@@ -40,6 +40,7 @@ from research_agents.config import (
     OPTIONS_MIN_PREMIUM_SCORE,
     OPTIONS_MIN_IV_LEVEL,
     OPTIONS_MIN_POP,
+    OPTIONS_COVERED_CALL_MIN_POP,
     OPTIONS_MAX_BID_ASK_PCT,
     OPTIONS_USE_MOOMOO_REALTIME,
     OPTIONS_UNIVERSE_NAME,
@@ -1310,7 +1311,7 @@ class OptionsAdvisor:
                 cc = self._covered_call_trade(
                     ticker, current_price, cc_chain["expiry"], cc_chain["dte"],
                     cc_chain["calls"], int(holding["shares"]),
-                    cost_basis=holding.get("cost_price"),
+                    atm_iv=atm_iv, cost_basis=holding.get("cost_price"),
                 )
                 if cc:
                     # Do not write calls through a binary earnings event.
@@ -2594,37 +2595,63 @@ class OptionsAdvisor:
     def _covered_call_trade(
         self, ticker: str, price: float, expiry: str, dte: int,
         calls: pd.DataFrame, shares: int,
-        min_otm: float = 0.05, cost_basis: Optional[float] = None,
+        atm_iv: Optional[float] = None, cost_basis: Optional[float] = None,
+        min_keep_pop: Optional[float] = None, min_otm: float = 0.02,
     ) -> Optional[dict]:
-        """Covered-call write on shares already held.
+        """Covered-call write on shares already held, chosen to KEEP the shares.
 
-        Sells an out-of-the-money call about `min_otm` above spot on stock the
-        trader already owns. This is income on an existing position, so its
-        real downside is the shares themselves, not new capital. `max_loss` is
-        set to the premium as a framework nominal, and the trade is flagged
-        `share_backed` so the portfolio does not treat it as defined risk.
+        The strike is selected so the call has a high probability of expiring
+        out of the money (you are not called away and just keep the premium).
+        Among strikes whose keep probability P(price < strike) clears
+        `min_keep_pop`, the lowest such strike is chosen — that is the most
+        premium for the target safety. If no strike reaches the bar, the safest
+        (highest) liquid strike is used so a covered call is still offered.
+
+        Never writes a call below cost basis, so assignment can only lock a
+        gain, never a loss. This is income on an existing position, so its real
+        downside is the shares themselves; `max_loss` is a framework nominal and
+        the trade is flagged `share_backed`.
         """
         if calls is None or calls.empty or shares < 100 or price <= 0:
             return None
-        target = price * (1 + min_otm)
-        otm = calls[
-            (calls["strike"] >= target)
-            & (calls["strike"] <= price * (1 + min_otm + 0.15))
+        if min_keep_pop is None:
+            min_keep_pop = OPTIONS_COVERED_CALL_MIN_POP
+        ref = cost_basis if (cost_basis and cost_basis > 0) else price
+        iv_fallback = atm_iv if (atm_iv and atm_iv > 0) else 0.30
+
+        # Never cap upside below cost basis, and keep at least a small OTM floor.
+        min_strike = max(price * (1 + min_otm), ref)
+        cand = calls[
+            (calls["strike"] >= min_strike)
             & (calls["openInterest"].fillna(0) >= OPTIONS_MIN_OPEN_INTEREST)
         ].sort_values("strike")
-        if otm.empty:
+        if cand.empty:
             return None
 
-        row = otm.iloc[0]
-        strike = float(row["strike"])
-        bid = float(row["bid"]) if row["bid"] > 0 else float(row["lastPrice"]) * 0.9
-        if bid <= 0:
+        chosen = None   # (strike, bid, iv, keep_pop) — lowest strike meeting bar
+        safest = None   # highest liquid strike, used if none meet the bar
+        for _, r in cand.iterrows():
+            strike = float(r["strike"])
+            bid = float(r["bid"]) if r["bid"] > 0 else float(r["lastPrice"]) * 0.9
+            if bid <= 0:
+                continue
+            iv = float(r["impliedVolatility"]) if r["impliedVolatility"] > 0 else iv_fallback
+            keep_pop = self._estimate_pop(price, 0.01, strike, iv, dte)  # P(S < K)
+            safest = (strike, bid, iv, keep_pop)
+            if keep_pop * 100 >= min_keep_pop:
+                chosen = (strike, bid, iv, keep_pop)
+                break
+        if chosen is None:
+            chosen = safest
+        if chosen is None:
             return None
-        oi = int(row["openInterest"]) if pd.notna(row["openInterest"]) else 0
-        iv = float(row["impliedVolatility"])
+
+        strike, bid, iv, keep_pop = chosen
+        oi_match = cand[cand["strike"] == strike]
+        oi = int(oi_match.iloc[0]["openInterest"]) if not oi_match.empty and pd.notna(oi_match.iloc[0]["openInterest"]) else 0
         contracts_possible = int(shares // 100)
         otm_pct = (strike - price) / price * 100
-        ref = cost_basis if (cost_basis and cost_basis > 0) else price
+        pop = round(keep_pop * 100, 1)
         if_called = (bid + max(0.0, strike - price)) * 100  # gain/contract if called
         static = bid * 100                                   # premium kept if not called
 
@@ -2648,6 +2675,9 @@ class OptionsAdvisor:
             "otm_pct": round(otm_pct, 1),
             "open_interest": oi,
             "iv": round(iv * 100, 1),
+            "pop": pop,                           # probability the call expires OTM
+            "keep_pop": pop,
+            "assignment_prob": round(100 - pop, 1),
             "share_backed": True,
             "shares_held": int(shares),
             "contracts_possible": contracts_possible,
@@ -2656,9 +2686,10 @@ class OptionsAdvisor:
             "cost_basis": round(ref, 2),
             "rationale": (
                 f"You hold {int(shares)} {ticker}. Sell {contracts_possible}x the "
-                f"${strike:.0f} call ({otm_pct:.1f}% OTM) for ${bid:.2f}/share. Keep "
-                f"the premium if {ticker} stays below ${strike:.0f}; if called away "
-                f"you sell at ${strike:.0f} for a "
+                f"${strike:.0f} call ({otm_pct:.1f}% OTM) for ${bid:.2f}/share. "
+                f"~{pop:.0f}% chance it expires worthless so you keep the shares and "
+                f"the premium; only ~{100 - pop:.0f}% chance of being called away, and "
+                f"if that happens you still sell at ${strike:.0f} for a "
                 f"{round(if_called / (ref * 100) * 100, 1)}% gain. {dte} DTE."
             ),
         }
